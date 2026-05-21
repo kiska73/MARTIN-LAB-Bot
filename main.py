@@ -3,18 +3,13 @@ import time
 from pybit.unified_trading import HTTP
 
 # =====================================================================
-# CONFIGURAZIONE
+# CONFIGURAZIONE (La tua originale)
 # =====================================================================
 API_KEY = os.environ.get("BYBIT_API_KEY")
 API_SECRET = os.environ.get("BYBIT_API_SECRET")
 SYMBOL = "LABUSDT"
-TP_LINK_ID = "TP_ORD_MASTER" 
 SOGLIA_SL = -0.16 
-SIZE_FISSA = 2     
-NUMERO_LIVELLI_GRIGLIA = 13
-RATIO_VOLATILITA = 0.73
 
-# Inizializzazione sessione (demo=False per mercato reale)
 session = HTTP(
     testnet=False,
     demo=True,
@@ -22,8 +17,13 @@ session = HTTP(
     api_secret=API_SECRET
 )
 
+GRID_SIZES = [2, 2, 2, 2, 5, 7, 9, 11, 15, 20, 25, 30, 50] 
+SIZE_LIVELLO_1 = GRID_SIZES[0]
+RESTANTI_LIVELLI = GRID_SIZES[1:]
+ratio_volatilità = 0.73
+
 # =====================================================================
-# FUNZIONI DI SUPPORTO
+# FUNZIONI
 # =====================================================================
 
 def recupera_stato_posizione():
@@ -32,90 +32,83 @@ def recupera_stato_posizione():
         if response and "list" in response["result"] and len(response["result"]["list"]) > 0:
             pos = response["result"]["list"][0]
             return float(pos.get("size", 0)), float(pos.get("avgPrice", 0))
-    except Exception as e:
-        print(f"Errore recupero posizioni: {e}")
+    except: pass
     return 0.0, 0.0
 
-def aggiorna_tp(size_posizione, quota_tp):
+def aggiorna_tp_limit_chirurgico(size_posizione, quota_tp):
     try:
         ordini = session.get_open_orders(category="linear", symbol=SYMBOL)["result"]["list"]
         for o in ordini:
-            if o.get("orderLinkId") == TP_LINK_ID:
+            if o["side"] == "Sell":
                 session.cancel_order(category="linear", symbol=SYMBOL, orderId=o["orderId"])
-                time.sleep(0.5)
     except: pass
-    
+        
     if size_posizione > 0:
         session.place_order(
             category="linear", symbol=SYMBOL, side="Sell",
             orderType="Limit", qty=str(size_posizione),
             price=str(round(quota_tp, 4)),
-            orderLinkId=TP_LINK_ID, positionIdx=0, reduceOnly=True
+            positionIdx=0, reduceOnly=True
         )
 
 # =====================================================================
 # CICLO PRINCIPALE
 # =====================================================================
 
-ultima_size = -1.0
-prezzo_ingresso_ufficiale = 0.0
+ultima_size_tracciata = -1.0 
+prezzo_ingresso_iniziale = 0.0 # Per tenere fisso lo SL
 
-print("🚀 BOT AVVIATO: Connessione al mercato reale...")
-s_init, p_init = recupera_stato_posizione()
-if s_init > 0:
-    prezzo_ingresso_ufficiale = p_init
-    ultima_size = s_init
-    print(f"✅ Sincronizzato! Posizione attiva: {s_init} LAB @ {p_init}")
+print("🚀 BOT IN ESECUZIONE (Griglia originale + SL -16% fisso)...")
 
 while True:
     try:
-        size, avg_price = recupera_stato_posizione()
+        size_attuale, prezzo_medio = recupera_stato_posizione()
         
-        # --- LOGICA DI MONITORAGGIO ---
-        if size > 0:
-            if prezzo_ingresso_ufficiale == 0: prezzo_ingresso_ufficiale = avg_price
-            
+        # 0. MONITORAGGIO CONTINUO SL (Sempre attivo)
+        if size_attuale > 0 and prezzo_ingresso_iniziale > 0:
             ticker = session.get_tickers(category="linear", symbol=SYMBOL)
-            prezzo_att = float(ticker["result"]["list"][0]["lastPrice"])
-            pnl_perc = (prezzo_att / prezzo_ingresso_ufficiale) - 1
+            prezzo_corrente = float(ticker["result"]["list"][0]["lastPrice"])
+            pnl_perc = (prezzo_corrente / prezzo_ingresso_iniziale) - 1
             
-            # Controllo SL
             if pnl_perc <= SOGLIA_SL:
-                print(f"🚨 SL RAGGIUNTO ({pnl_perc:.2%})! Chiusura Market.")
+                print(f"🚨 SL -16% RAGGIUNTO! Chiusura Market.")
                 session.place_order(category="linear", symbol=SYMBOL, side="Sell", 
-                                    orderType="Market", qty=str(size), positionIdx=0, reduceOnly=True)
-                prezzo_ingresso_ufficiale = 0
-                ultima_size = -1.0
-                time.sleep(10)
+                                    orderType="Market", qty=str(size_attuale), positionIdx=0, reduceOnly=True)
+                ultima_size_tracciata = -1.0
+                prezzo_ingresso_iniziale = 0.0
                 continue
 
-            # Aggiorna TP
-            if size != ultima_size:
-                aggiorna_tp(size, avg_price * (1 + RATIO_VOLATILITA/100))
-                ultima_size = size
-        
-        # --- LOGICA DI RIPARTENZA ---
-        elif size == 0:
-            prezzo_ingresso_ufficiale = 0
-            ultima_size = -1.0
-            print("🧹 Reset ciclo: piazzamento griglia...")
+        # 1. Se la size cambia (nuovo livello preso)
+        if size_attuale > 0 and size_attuale != ultima_size_tracciata:
+            nuovo_tp = prezzo_medio * (1 + ratio_volatilità / 100)
+            aggiorna_tp_limit_chirurgico(size_attuale, nuovo_tp)
+            ultima_size_tracciata = size_attuale
+            
+        # 2. Se siamo a zero, resetta e piazza TUTTO
+        elif size_attuale == 0 and ultima_size_tracciata != 0:
+            print("🧹 Reset completo: piazzamento massivo...")
             try: session.cancel_all_orders(category="linear", symbol=SYMBOL)
             except: pass
             
             session.place_order(category="linear", symbol=SYMBOL, side="Buy", 
-                                orderType="Market", qty=str(SIZE_FISSA), positionIdx=0)
-            time.sleep(3)
+                                orderType="Market", qty=str(SIZE_LIVELLO_1), positionIdx=0)
             
-            _, p_ingresso = recupera_stato_posizione()
-            if p_ingresso > 0:
-                prezzo_ingresso_ufficiale = p_ingresso
-                for i in range(1, NUMERO_LIVELLI_GRIGLIA):
-                    prezzo_liv = p_ingresso * (1 - (RATIO_VOLATILITA * i) / 100)
+            time.sleep(3)
+            s_nuova, p_ingresso = recupera_stato_posizione()
+            
+            if s_nuova > 0:
+                prezzo_ingresso_iniziale = p_ingresso # Fissiamo il punto per lo SL
+                for i, size in enumerate(RESTANTI_LIVELLI):
+                    prezzo_livello = p_ingresso * (1 - (ratio_volatilità * (i + 1)) / 100)
                     session.place_order(category="linear", symbol=SYMBOL, side="Buy", 
-                                        orderType="Limit", qty=str(SIZE_FISSA), price=str(round(prezzo_liv, 4)), positionIdx=0)
-                aggiorna_tp(SIZE_FISSA, p_ingresso * (1 + RATIO_VOLATILITA/100))
+                                        orderType="Limit", qty=str(size), price=str(round(prezzo_livello, 4)), positionIdx=0)
+                
+                tp_iniziale = p_ingresso * (1 + ratio_volatilità / 100)
+                aggiorna_tp_limit_chirurgico(s_nuova, tp_iniziale)
+                ultima_size_tracciata = s_nuova
+                print("✅ Ciclo ripartito.")
 
         time.sleep(3)
     except Exception as e:
-        print(f"⚠️ Errore critico: {e}")
+        print(f"⚠️ Errore: {e}")
         time.sleep(5)
