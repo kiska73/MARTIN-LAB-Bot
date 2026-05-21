@@ -20,22 +20,16 @@ session = HTTP(
 GRID_SIZES_STANDARD = [2, 2, 2, 2, 5, 7, 9, 11, 15, 20, 25, 30, 50]
 
 # =====================================================================
-# FUNZIONI DI SUPPORTO
+# FUNZIONI
 # =====================================================================
 
 def calcola_strategia_dinamica():
-    """Analizza volatilità: se alta, tutti ordini da 2 LAB, altrimenti griglia crescente."""
     try:
         klines = session.get_kline(category="linear", symbol=SYMBOL, interval="60", limit=24)
         prezzi = [float(k[4]) for k in klines["result"]["list"]]
         vol_attuale = (max(prezzi) - min(prezzi)) / min(prezzi) * 100
-        
-        if vol_attuale > 2.0:
-            return [2] * 13 # Alta volatilità: tutti uguali
-        else:
-            return GRID_SIZES_STANDARD # Normale: crescente
-    except: 
-        return GRID_SIZES_STANDARD
+        return [2] * 13 if vol_attuale > 2.0 else GRID_SIZES_STANDARD
+    except: return GRID_SIZES_STANDARD
 
 def recupera_stato_posizione():
     try:
@@ -66,47 +60,43 @@ def aggiorna_tp_limit_chirurgico(size_posizione, quota_tp):
 ultima_size_tracciata = -1.0 
 prezzo_ingresso_iniziale = 0.0
 
-print("🚀 BOT AVVIATO: Strategia adattiva (Volumi vari/Distanza 1% fissa).")
+print("🚀 BOT AVVIATO: Controllo SL immediato.")
 
 while True:
     try:
         size_attuale, prezzo_medio = recupera_stato_posizione()
         
-        # 1. MONITORAGGIO SL FISSO
+        # 1. SL FISSO - CONTROLLO IMMEDIATO
         if size_attuale > 0 and prezzo_ingresso_iniziale > 0:
             ticker = session.get_tickers(category="linear", symbol=SYMBOL)
             prezzo_corrente = float(ticker["result"]["list"][0]["lastPrice"])
-            pnl_perc = (prezzo_corrente / prezzo_ingresso_iniziale) - 1
-            if pnl_perc <= SOGLIA_SL:
-                print("🚨 SL -16% RAGGIUNTO! Chiusura Market.")
+            if (prezzo_corrente / prezzo_ingresso_iniziale) - 1 <= SOGLIA_SL:
+                print("🚨 SL RAGGIUNTO! Chiusura Market.")
                 session.place_order(category="linear", symbol=SYMBOL, side="Sell", 
                                     orderType="Market", qty=str(size_attuale), positionIdx=0, reduceOnly=True)
                 ultima_size_tracciata = -1.0
                 prezzo_ingresso_iniziale = 0.0
                 continue
 
-        # 2. AGGIORNA TP
-        if size_attuale > 0 and size_attuale != ultima_size_tracciata:
-            aggiorna_tp_limit_chirurgico(size_attuale, prezzo_medio * 1.01)
-            ultima_size_tracciata = size_attuale
-            
-        # 3. RESET E PIAZZAMENTO
+        # 2. RESET E PIAZZAMENTO (CON SL IMMEDIATO)
         elif size_attuale == 0 and ultima_size_tracciata != 0:
-            print("🧹 Reset: Analisi volatilità...")
+            print("🧹 Reset: Analisi in corso...")
             lista_sizes = calcola_strategia_dinamica()
             
             try: session.cancel_all_orders(category="linear", symbol=SYMBOL)
             except: pass
             
+            # Apertura primo ordine
             session.place_order(category="linear", symbol=SYMBOL, side="Buy", 
                                 orderType="Market", qty=str(lista_sizes[0]), positionIdx=0)
             
-            time.sleep(3)
+            time.sleep(2)
             s_nuova, p_ingresso = recupera_stato_posizione()
             
             if s_nuova > 0:
+                # IMPOSTAZIONE IMMEDIATA PREZZO PER SL
                 prezzo_ingresso_iniziale = p_ingresso 
-                print(f"✅ Primo ordine eseguito @ {p_ingresso}. SL attivo.")
+                print(f"✅ Primo ordine @ {p_ingresso}. SL a -16% ATTIVATO.")
                 
                 for i in range(1, len(lista_sizes)):
                     prezzo_livello = p_ingresso * (1 - (1.0 * i) / 100)
@@ -116,9 +106,13 @@ while True:
                 
                 aggiorna_tp_limit_chirurgico(s_nuova, p_ingresso * 1.01)
                 ultima_size_tracciata = s_nuova
-                print("✅ Ciclo ripartito con successo.")
 
-        time.sleep(3)
+        # 3. Aggiorna TP se cambia la size
+        if size_attuale > 0 and size_attuale != ultima_size_tracciata:
+            aggiorna_tp_limit_chirurgico(size_attuale, prezzo_medio * 1.01)
+            ultima_size_tracciata = size_attuale
+
+        time.sleep(2)
     except Exception as e:
-        print(f"⚠️ Errore critico: {e}")
+        print(f"⚠️ Errore: {e}")
         time.sleep(5)
