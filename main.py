@@ -26,12 +26,10 @@ RESTANTI_LIVELLI = GRID_SIZES[1:]
 # =====================================================================
 
 def calcola_volatilità_dinamica():
-    """Analizza le ultime 24h per decidere quanto allargare la griglia."""
     try:
         klines = session.get_kline(category="linear", symbol=SYMBOL, interval="60", limit=24)
         prezzi = [float(k[4]) for k in klines["result"]["list"]]
         vol_attuale = (max(prezzi) - min(prezzi)) / min(prezzi) * 100
-        # Se molto volatile (es. > 2%), usa 1.0, altrimenti 0.73
         return 1.0 if vol_attuale > 2.0 else 0.73
     except: return 0.73
 
@@ -73,7 +71,7 @@ while True:
     try:
         size_attuale, prezzo_medio = recupera_stato_posizione()
         
-        # 1. MONITORAGGIO SL FISSO
+        # 1. MONITORAGGIO SL FISSO (Sempre attivo se siamo in posizione)
         if size_attuale > 0 and prezzo_ingresso_iniziale > 0:
             ticker = session.get_tickers(category="linear", symbol=SYMBOL)
             prezzo_corrente = float(ticker["result"]["list"][0]["lastPrice"])
@@ -89,12 +87,11 @@ while True:
 
         # 2. SE IN POSIZIONE: AGGIORNA TP
         if size_attuale > 0 and size_attuale != ultima_size_tracciata:
-            # Qui manteniamo il ratio statico per coerenza durante il trade
             nuovo_tp = prezzo_medio * (1 + 0.73 / 100)
             aggiorna_tp_limit_chirurgico(size_attuale, nuovo_tp)
             ultima_size_tracciata = size_attuale
             
-        # 3. SE A ZERO: RESET, CALCOLO VOLATILITÀ E NUOVA GRIGLIA
+        # 3. SE A ZERO: RESET, CALCOLO E NUOVA GRIGLIA
         elif size_attuale == 0 and ultima_size_tracciata != 0:
             print("🧹 Reset: Analisi mercato in corso...")
             ratio_uso = calcola_volatilità_dinamica()
@@ -103,6 +100,7 @@ while True:
             try: session.cancel_all_orders(category="linear", symbol=SYMBOL)
             except: pass
             
+            # Apertura primo ordine
             session.place_order(category="linear", symbol=SYMBOL, side="Buy", 
                                 orderType="Market", qty=str(SIZE_LIVELLO_1), positionIdx=0)
             
@@ -110,7 +108,11 @@ while True:
             s_nuova, p_ingresso = recupera_stato_posizione()
             
             if s_nuova > 0:
-                prezzo_ingresso_iniziale = p_ingresso
+                # Impostazione immediata prezzo per SL
+                prezzo_ingresso_iniziale = p_ingresso 
+                print(f"✅ Primo ordine eseguito a: {p_ingresso}. SL attivo.")
+                
+                # Piazzamento griglia
                 for i, size in enumerate(RESTANTI_LIVELLI):
                     prezzo_livello = p_ingresso * (1 - (ratio_uso * (i + 1)) / 100)
                     session.place_order(category="linear", symbol=SYMBOL, side="Buy", 
