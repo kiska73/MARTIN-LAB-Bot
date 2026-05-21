@@ -1,180 +1,235 @@
 import time
-import requests
-import os
-import pandas as pd
 import math
-from datetime import datetime, timezone, timedelta
 from pybit.unified_trading import HTTP
 
-# --- CONFIGURAZIONE ---
-API_KEY = os.getenv('API_KEY')
-API_SECRET = os.getenv('API_SECRET')
-TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
-TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
+# =====================================================================
+# CONFIGURAZIONE API CREDENTIALS (DEMO / TESTNET)
+# =====================================================================
+API_KEY = "Qd7sfSmeoT5DzfqX4w"
+API_SECRET = "S8kzjv5ujlUTcYh5GY5H7m4yTDhymPNSapMT"
+SYMBOL = "LABUSDT"          # Cambialo se necessario con il ticker esatto di Testnet
 
-SYMBOL = "ETHUSDT"
-FIXED_SIZE_USD = 1000
-OFFSET_MINUTES = 30  # Strategia "Trump": entra 30 min dopo l'inizio del blocco 4H
+# Griglia a 13 livelli espansa con ordini da 25, 30 e il Jolly da 50 LAB
+GRID_SIZES = [2, 2, 2, 2, 5, 7, 9, 11, 15, 20, 25, 30, 50] 
+TOTAL_EMERGENCY_SIZE = sum(GRID_SIZES) # Calcola automaticamente 180.0 LAB
 
-# Parametri Strategia
-TP_PERC = 3.0 / 100
-SL_PERC = 1.5 / 100
-EMA_LENGTH = 18
-
+# Connessione nativa ai server di Bybit Testnet
 session = HTTP(
-    testnet=False,
+    testnet=True,
     api_key=API_KEY,
-    api_secret=API_SECRET,
-    recv_window=20000
+    api_secret=API_SECRET
 )
 
-# Variabili di stato
-current_bias_block = None
-trade_done_in_block = False
+# Memoria di stato per la gestione dinamica del ciclo
+bot_state = {
+    "last_vol_check": 0,
+    "current_regime_ratio": 1.0,
+    "emergency_state_active": False,
+    "half_size_liquidated": False,
+    "max_price_reached_during_rebound": 0.0,
+    "grid_placed": False
+}
 
-# ------------------------------------------------
+# =====================================================================
+# FUNZIONI DI MERCATO API BYBIT V5
+# =====================================================================
 
-def send_telegram(msg):
-    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID: return
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+def get_volatility_ratio():
+    """Analisi Volatilità Relativa: Confronta l'ultima ora con i 3 giorni passati"""
     try:
-        requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": msg}, timeout=10)
-    except: pass
+        # Benchmark 3 giorni (Candele Daily)
+        kline_3gg = session.get_kline(category="linear", symbol=SYMBOL, interval="D", limit=3)['result']['list']
+        ranges_3gg = [float(c[2]) - float(c[3]) for c in kline_3gg] # High - Low
+        avg_range_3gg = sum(ranges_3gg) / len(ranges_3gg)
+        
+        # Flusso attuale 1 ora (60 candele da 1 minuto)
+        kline_1h = session.get_kline(category="linear", symbol=SYMBOL, interval="1", limit=60)['result']['list']
+        ranges_1h = [float(c[2]) - float(c[3]) for c in kline_1h]
+        avg_range_1h = (sum(ranges_1h) / len(ranges_1h)) * 60 
+        
+        if avg_range_3gg > 0:
+            ratio = avg_range_1h / avg_range_3gg
+            return round(ratio, 2)
+        return 1.0
+    except Exception as e:
+        print(f"⚠️ Nota: Impossibile calcolare volatilità (Uso Ratio Standard 1.0): {e}")
+        return 1.0
 
-def get_precision(symbol):
-    """Recupera la precisione corretta per QTY e PRICE dal server Bybit"""
+def get_current_price():
+    """Recupera l'ultimo prezzo battuto dal mercato ticker"""
     try:
-        res = session.get_instruments_info(category="linear", symbol=symbol)
-        if res["retCode"] == 0:
-            info = res["result"]["list"][0]
-            qty_step = float(info["lotSizeFilter"]["qtyStep"])
-            price_step = float(info["priceFilter"]["tickSize"])
-            qty_precision = max(0, int(-math.log10(qty_step)))
-            price_precision = max(0, int(-math.log10(price_step)))
-            return qty_precision, price_precision
-    except:
-        return 2, 2
-    return 2, 2
+        ticker = session.get_tickers(category="linear", symbol=SYMBOL)
+        return float(ticker['result']['list'][0]['lastPrice'])
+    except Exception as e:
+        print(f"⚠️ Errore lettura prezzo di mercato: {e}")
+        return 0.0
 
-def get_current_position():
+def get_active_position():
+    """Verifica lo stato della posizione attiva (One-Way Mode)"""
     try:
         res = session.get_positions(category="linear", symbol=SYMBOL)
-        if res["retCode"] == 0:
-            for pos in res["result"]["list"]:
-                size = float(pos["size"])
-                if size > 0:
-                    return pos["side"], size, float(pos["avgPrice"]), float(pos["unrealisedPnl"])
-        return None, 0, 0, 0
-    except: return None, 0, 0, 0
-
-def get_data_signals():
-    try:
-        # Bias basato su candele standard 4H (240 min)
-        d = session.get_kline(category="linear", symbol=SYMBOL, interval="240", limit=2)
-        bias_4h_val = float(d["result"]["list"][1][4]) # Chiusura dell'ultima candela 4H completata
-
-        # EMA e Prezzo basati su timeframe 1m per precisione d'ingresso
-        m = session.get_kline(category="linear", symbol=SYMBOL, interval="1", limit=150)
-        df = pd.DataFrame(m["result"]["list"], columns=["time","open","high","low","close","vol","turnover"])
-        df["close"] = df["close"].astype(float)
-        df = df.iloc[::-1].reset_index(drop=True)
+        positions = res.get('result', {}).get('list', [])
         
-        df["ema"] = df["close"].ewm(span=EMA_LENGTH, adjust=False).mean()
-
-        last_price = df["close"].iloc[-1]
-        ema_val = df["ema"].iloc[-1]
-        
-        return bias_4h_val, ema_val, last_price
+        for p in positions:
+            size = float(p.get('size', 0))
+            if size > 0:
+                return size, float(p['avgPrice'])
+        return 0.0, 0.0
     except Exception as e:
-        print(f"Errore recupero dati: {e}")
-        return None, None, None
+        print(f"⚠️ Errore lettura posizioni aperte: {e}")
+        return 0.0, 0.0
 
-def execute_trade(side, price):
+def cancel_all_grid_orders():
+    """Pulisce il book da tutti gli ordini Limit pendenti del bot"""
     try:
-        qty_prec, price_prec = get_precision(SYMBOL)
-        raw_qty = FIXED_SIZE_USD / price
-        qty = math.floor(raw_qty * (10**qty_prec)) / (10**qty_prec)
-        
-        tp = round(price * (1 + TP_PERC) if side == "Buy" else price * (1 - TP_PERC), price_prec)
-        sl = round(price * (1 - SL_PERC) if side == "Buy" else price * (1 + SL_PERC), price_prec)
+        session.cancel_all_orders(category="linear", symbol=SYMBOL)
+        print("🧹 Tabula rasa sul book. Ordini pendenti cancellati.")
+    except Exception as e:
+        print(f"⚠️ Errore cancellazione ordini: {e}")
 
-        order = session.place_order(
-            category="linear", symbol=SYMBOL, side=side, orderType="Market",
-            qty=str(qty), takeProfit=str(tp), stopLoss=str(sl)
+def place_dynamic_grid(current_price, vol_ratio):
+    """Piazza la griglia a fisarmonica (13 livelli geometrici) allineata alla volatilità"""
+    cancel_all_grid_orders()
+    
+    base_step_percent = 0.01 
+    dynamic_step = base_step_percent * vol_ratio
+    
+    print(f"📐 Configurazione Griglia a Fisarmonica | Spaziatura Corrente: {dynamic_step * 100:.2f}%")
+    
+    for i, size in enumerate(GRID_SIZES):
+        # Ogni livello si distanzia progressivamente seguendo la volatilità
+        target_price = current_price * (1 - (dynamic_step * (i + 1)))
+        target_price = round(target_price, 4) 
+        
+        try:
+            session.place_order(
+                category="linear",
+                symbol=SYMBOL,
+                side="Buy",
+                orderType="Limit",
+                qty=str(size),
+                price=str(target_price),
+                positionIdx=0
+            )
+        except Exception as e:
+            print(f"❌ Impossibile piazzare livello {i+1} (Size: {size} LAB): {e}")
+
+def market_close_position(qty_to_close):
+    """Spara un ordine Market immediato per alleggerire la posizione"""
+    try:
+        session.place_order(
+            category="linear",
+            symbol=SYMBOL,
+            side="Sell",
+            orderType="Market",
+            qty=str(qty_to_close),
+            positionIdx=0
         )
-        
-        if order["retCode"] == 0:
-            msg = f"🚀 TRUMP TRADE: {side}\nQty: {qty}\nPrice: {price}\nTP: {tp} | SL: {sl}"
-            print(msg)
-            send_telegram(msg)
-            return True
-        return False
     except Exception as e:
-        print(f"Errore esecuzione: {e}")
-        return False
+        print(f"❌ Errore esecuzione ordine Market: {e}")
 
-def run_strategy():
-    global current_bias_block, trade_done_in_block
-    print("🇺🇸 Bot Trump 4H (30-min Offset) Avviato...")
-    send_telegram("🇺🇸 Bot Trump 4H attivo. Offset: 30min dopo il blocco standard.")
+# =====================================================================
+# ARCHITETTURA CICLO CONTINUO (MONITORAGGIO LOGICO)
+# =====================================================================
 
+def run_bot():
+    print("🚀 MASTER BOT PRONTO. Avvio del monitoraggio demo in corso su Bybit...")
+    
     while True:
         try:
-            now = datetime.now(timezone.utc)
+            position_size, avg_price = get_active_position()
+            market_price = get_current_price()
             
-            # --- LOGICA CALCOLO BLOCCO SFASATO ---
-            standard_hour = (now.hour // 4) * 4
-            # Il blocco per il bot inizia alle HH:30 invece che alle HH:00
-            this_block_start = now.replace(hour=standard_hour, minute=OFFSET_MINUTES, second=0, microsecond=0)
-            
-            # Se siamo tra le 00:00 e le 00:29, apparteniamo ancora al blocco delle 20:30 del giorno prima
-            if now < this_block_start:
-                # Sottraiamo 4 ore per trovare l'inizio del blocco precedente
-                prev_time = this_block_start - timedelta(hours=4)
-                this_block_start = prev_time
+            if market_price == 0.0:
+                time.sleep(2)
+                continue
 
-            # Reset se entriamo in un nuovo intervallo di 4 ore
-            if current_bias_block != this_block_start:
-                current_bias_block = this_block_start
-                trade_done_in_block = False
-                send_telegram(f"🕒 Nuovo ciclo operativo iniziato: {this_block_start.strftime('%H:%M')} UTC")
-
-            # Controllo ogni minuto
-            time.sleep(60)
-
-            bias_val, ema_val, last_price = get_data_signals()
-            if bias_val is None: continue
-
-            side_active, size, entry, pnl = get_current_position()
-
-            # 1. CHIUSURA PREVENTIVA (2 minuti prima del prossimo "Trump Block")
-            next_block = this_block_start + timedelta(hours=4)
-            seconds_to_reset = (next_block - now).total_seconds()
-
-            if size > 0 and seconds_to_reset <= 120:
-                exit_side = "Sell" if side_active == "Buy" else "Buy"
-                session.place_order(category="linear", symbol=SYMBOL, side=exit_side, orderType="Market", qty=str(size))
-                send_telegram("⚠️ Fine turno: Chiusura posizione pre-nuovo blocco.")
-                trade_done_in_block = True 
-
-            # 2. LOGICA INGRESSO (Solo se siamo oltre i 30 min e non abbiamo ancora operato)
-            if size == 0 and not trade_done_in_block:
-                # Verifichiamo se il prezzo conferma il bias dopo il "rumore" iniziale
-                if last_price > bias_val and last_price > ema_val:
-                    if execute_trade("Buy", last_price):
-                        trade_done_in_block = True
+            # CONTROLLO VOLATILITÀ PERIODICO (Ogni 5 minuti)
+            if time.time() - bot_state["last_vol_check"] > 300:
+                bot_state["current_regime_ratio"] = get_volatility_ratio()
+                bot_state["last_vol_check"] = time.time()
                 
-                elif last_price < bias_val and last_price < ema_val:
-                    if execute_trade("Sell", last_price):
-                        trade_done_in_block = True
+                # Applica il Cancel & Replace se siamo flat sul mercato
+                if position_size == 0:
+                    print(f"🔄 Ricalcolo Volatilità Completato (Ratio Attuale: {bot_state['current_regime_ratio']})")
+                    place_dynamic_grid(market_price, bot_state["current_regime_ratio"])
+                    bot_state["grid_placed"] = True
 
-            status = "Wait 30m" if now < this_block_start else "Scanning"
-            if trade_done_in_block: status = "Done"
-            print(f"[{now.strftime('%H:%M')}] Px: {last_price} | Bias: {bias_val} | EMA: {ema_val:.1f} | Stat: {status}")
+            # CASO 1: NESSUNA POSIZIONE (Mercato in attesa o ciclo chiuso)
+            if position_size == 0:
+                if not bot_state["grid_placed"]:
+                    place_dynamic_grid(market_price, bot_state["current_regime_ratio"])
+                    bot_state["grid_placed"] = True
+                
+                # Reset totale della memoria difensiva
+                bot_state["emergency_state_active"] = False
+                bot_state["half_size_liquidated"] = False
+                bot_state["max_price_reached_during_rebound"] = 0.0
+
+            # CASO 2: STATO DI EMERGENZA (Caricato anche il 13° livello - Jolly da 50 LAB)
+            elif position_size >= TOTAL_EMERGENCY_SIZE:
+                if not bot_state["emergency_state_active"]:
+                    print("🚨 EMERGENZA ATTIVATA: Raggiunto il fondo griglia con il Jolly da 50 LAB!")
+                    cancel_all_grid_orders() # Blocca inserimenti spuri
+                    bot_state["emergency_state_active"] = True
+
+                # Target Break-Even calcolato per recuperare subito le commissioni (+0.2%)
+                target_break_even = avg_price * 1.002
+                
+                # FASE A: Scarico immediato del 50% al tocco della media di carico
+                if market_price >= target_break_even and not bot_state["half_size_liquidated"]:
+                    size_to_liquidate = round(position_size / 2, 2)
+                    print(f"⚡ Rimbalzo tecnico intercettato. Liquidazione immediata del 50% ({size_to_liquidate} LAB)")
+                    market_close_position(size_to_liquidate)
+                    
+                    bot_state["half_size_liquidated"] = True
+                    bot_state["max_price_reached_during_rebound"] = market_price
+                    print("✅ Rischio monetario dimezzato. Attivazione Inseguitore Stop Loss sulla quota restante.")
+                
+                # FASE B: Trailing Stop Loss del -2% sulla metà protetta
+                if bot_state["half_size_liquidated"]:
+                    if market_price > bot_state["max_price_reached_during_rebound"]:
+                        bot_state["max_price_reached_during_rebound"] = market_price
+                    
+                    trailing_sl_floor = bot_state["max_price_reached_during_rebound"] * 0.98
+                    
+                    if market_price <= trailing_sl_floor:
+                        print(f"📉 Il rimbalzo si è arrestato. Scatta il Trailing SL di emergenza a {market_price}")
+                        current_remany_size, _ = get_active_position()
+                        if current_remany_size > 0:
+                            market_close_position(current_remany_size)
+                        bot_state["grid_placed"] = False 
+
+            # CASO 3: GESTIONE PROFITTO DINAMICO (Griglia standard parziale: livelli da 1 a 12)
+            elif position_size > 0 and position_size < TOTAL_EMERGENCY_SIZE:
+                bot_state["grid_placed"] = False 
+                
+                # Assegnazione automatica del Take Profit in base alla volatilità calcolata
+                if bot_state["current_regime_ratio"] < 0.7:
+                    tp_percent = 0.006  # +0.6% (Bassa volatilità: prendi e scappa)
+                    regime_name = "BASSA VOLATILITÀ"
+                elif bot_state["current_regime_ratio"] > 1.5:
+                    tp_percent = 0.012  # +1.2% (Alta volatilità: estendi l'uscita sul rimbalzo)
+                    regime_name = "ALTA VOLATILITÀ"
+                else:
+                    tp_percent = 0.008  # +0.8% (Regime Standard)
+                    regime_name = "VOLATILITÀ NORMALE"
+                
+                dynamic_tp_target = avg_price * (1 + tp_percent)
+                
+                # Stampa dinamica a schermo per monitorare i dati in tempo reale senza intasare il terminale
+                print(f"📊 [Posizione: {position_size} LAB] | [Media: {avg_price:.4f}] | [{regime_name}] | [Target TP: {dynamic_tp_target:.4f}]", end="\r")
+                
+                if market_price >= dynamic_tp_target:
+                    print(f"\n💰 Target {regime_name} (+{tp_percent*100}%) Preso! Liquidazione totale della griglia.")
+                    market_close_position(position_size)
+                    cancel_all_grid_orders()
+                    bot_state["grid_placed"] = False
 
         except Exception as e:
-            print(f"Errore loop: {e}")
-            time.sleep(10)
+            print(f"\n⚠️ Interruzione aggirata nel ciclo principale: {e}")
+            
+        time.sleep(2) # Pausa di 2 secondi per il rispetto dei limiti di frequenza (Rate Limit) Bybit
 
 if __name__ == "__main__":
-    run_strategy()
+    run_bot()
