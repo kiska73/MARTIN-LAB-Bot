@@ -14,7 +14,13 @@ SIZE_FISSA = 2
 NUMERO_LIVELLI_GRIGLIA = 13
 RATIO_VOLATILITA = 0.73
 
-session = HTTP(api_key=API_KEY, api_secret=API_SECRET)
+# Inizializzazione sessione (demo=False per mercato reale)
+session = HTTP(
+    testnet=False,
+    demo=True,
+    api_key=API_KEY,
+    api_secret=API_SECRET
+)
 
 # =====================================================================
 # FUNZIONI DI SUPPORTO
@@ -23,18 +29,20 @@ session = HTTP(api_key=API_KEY, api_secret=API_SECRET)
 def recupera_stato_posizione():
     try:
         response = session.get_positions(category="linear", symbol=SYMBOL)
-        pos = response["result"]["list"][0]
-        return float(pos["size"]), float(pos["avgPrice"])
-    except: return 0.0, 0.0
+        if response and "list" in response["result"] and len(response["result"]["list"]) > 0:
+            pos = response["result"]["list"][0]
+            return float(pos.get("size", 0)), float(pos.get("avgPrice", 0))
+    except Exception as e:
+        print(f"Errore recupero posizioni: {e}")
+    return 0.0, 0.0
 
 def aggiorna_tp(size_posizione, quota_tp):
-    # Pulisce vecchi ordini TP
     try:
         ordini = session.get_open_orders(category="linear", symbol=SYMBOL)["result"]["list"]
         for o in ordini:
             if o.get("orderLinkId") == TP_LINK_ID:
                 session.cancel_order(category="linear", symbol=SYMBOL, orderId=o["orderId"])
-                time.sleep(0.2)
+                time.sleep(0.5)
     except: pass
     
     if size_posizione > 0:
@@ -52,8 +60,7 @@ def aggiorna_tp(size_posizione, quota_tp):
 ultima_size = -1.0
 prezzo_ingresso_ufficiale = 0.0
 
-print("🚀 BOT AVVIATO: Sincronizzazione in corso...")
-# Sincronizzazione iniziale
+print("🚀 BOT AVVIATO: Connessione al mercato reale...")
 s_init, p_init = recupera_stato_posizione()
 if s_init > 0:
     prezzo_ingresso_ufficiale = p_init
@@ -82,7 +89,7 @@ while True:
                 time.sleep(10)
                 continue
 
-            # Aggiorna TP se la size cambia
+            # Aggiorna TP
             if size != ultima_size:
                 aggiorna_tp(size, avg_price * (1 + RATIO_VOLATILITA/100))
                 ultima_size = size
@@ -99,7 +106,6 @@ while True:
                                 orderType="Market", qty=str(SIZE_FISSA), positionIdx=0)
             time.sleep(3)
             
-            # Recupera prezzo per piazzare la griglia
             _, p_ingresso = recupera_stato_posizione()
             if p_ingresso > 0:
                 prezzo_ingresso_ufficiale = p_ingresso
@@ -111,5 +117,5 @@ while True:
 
         time.sleep(3)
     except Exception as e:
-        print(f"⚠️ Errore: {e}")
+        print(f"⚠️ Errore critico: {e}")
         time.sleep(5)
