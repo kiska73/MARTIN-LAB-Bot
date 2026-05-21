@@ -8,7 +8,6 @@ from pybit.unified_trading import HTTP
 API_KEY = os.environ.get("BYBIT_API_KEY")
 API_SECRET = os.environ.get("BYBIT_API_SECRET")
 SYMBOL = "LABUSDT"
-TP_LINK_ID = "TP_ORDER_MASTER_BOT" # Etichetta univoca per il TP
 
 session = HTTP(
     testnet=False,
@@ -20,9 +19,10 @@ session = HTTP(
 GRID_SIZES = [2, 2, 2, 2, 5, 7, 9, 11, 15, 20, 25, 30, 50] 
 SIZE_LIVELLO_1 = GRID_SIZES[0]
 RESTANTI_LIVELLI = GRID_SIZES[1:]
+ratio_volatilità = 0.73
 
 # =====================================================================
-# FUNZIONI
+# FUNZIONI CHIRURGICHE
 # =====================================================================
 
 def recupera_stato_posizione():
@@ -31,75 +31,69 @@ def recupera_stato_posizione():
         if response and "list" in response["result"] and len(response["result"]["list"]) > 0:
             pos = response["result"]["list"][0]
             return float(pos.get("size", 0)), float(pos.get("avgPrice", 0))
-    except Exception as e:
-        print(f"⚠️ Errore lettura: {e}")
+    except: pass
     return 0.0, 0.0
 
-def aggiorna_tp_limit(size_posizione, quota_tp):
-    """Cancella solo il TP tramite ID e ne piazza uno nuovo."""
+def aggiorna_tp_limit_chirurgico(size_posizione, quota_tp):
+    """Cancella solo gli ordini di VENDITA (TP) e ne piazza uno nuovo."""
     try:
-        # Cancella SOLO il TP, non la griglia!
-        session.cancel_order(category="linear", symbol=SYMBOL, orderLinkId=TP_LINK_ID)
-    except:
-        pass 
+        # Recupera tutti gli ordini aperti
+        ordini = session.get_open_orders(category="linear", symbol=SYMBOL)["result"]["list"]
+        for o in ordini:
+            # Cancella SOLO se è un ordine di VENDITA (il TP)
+            if o["side"] == "Sell":
+                session.cancel_order(category="linear", symbol=SYMBOL, orderId=o["orderId"])
+                print(f"🧹 TP precedente rimosso.")
+    except: pass
         
     if size_posizione > 0:
         session.place_order(
             category="linear", symbol=SYMBOL, side="Sell",
             orderType="Limit", qty=str(size_posizione),
             price=str(round(quota_tp, 4)),
-            orderLinkId=TP_LINK_ID, # Etichetta fondamentale
             positionIdx=0, reduceOnly=True
         )
-        print(f"🎯 [MAKER] TP Limit aggiornato a: {round(quota_tp, 4)}")
-
-def piazza_restante_griglia_limit(prezzo_riferimento, spaziatura):
-    for i, size in enumerate(RESTANTI_LIVELLI):
-        prezzo_livello = prezzo_riferimento * (1 - (spaziatura * (i + 1)) / 100)
-        session.place_order(
-            category="linear", symbol=SYMBOL, side="Buy",
-            orderType="Limit", qty=str(size),
-            price=str(round(prezzo_livello, 4)),
-            positionIdx=0
-        )
+        print(f"🎯 [MAKER] TP Limit fissato a: {round(quota_tp, 4)}")
 
 # =====================================================================
 # CICLO PRINCIPALE
 # =====================================================================
 
 ultima_size_tracciata = -1.0 
-ratio_volatilità = 0.73
 
-print("🚀 MASTER BOT PRONTO.")
+print("🚀 BOT IN ESECUZIONE (Logica Chirurgica)...")
 
 while True:
     try:
         size_attuale, prezzo_medio = recupera_stato_posizione()
         
-        if size_attuale != ultima_size_tracciata:
-            if size_attuale > 0:
-                # La posizione è attiva, aggiorniamo il TP (Maker)
-                nuovo_tp = prezzo_medio * (1 + ratio_volatilità / 100)
-                aggiorna_tp_limit(size_attuale, nuovo_tp)
-                ultima_size_tracciata = size_attuale
-                
-            else:
-                # Posizione zero: avvio ciclo o TP eseguito
-                print("🧹 Reset ciclo...")
-                try: session.cancel_all_orders(category="linear", symbol=SYMBOL)
-                except: pass
-                
-                # Entrata a mercato
+        # 1. Se la size cambia, aggiorna SOLO il TP
+        if size_attuale > 0 and size_attuale != ultima_size_tracciata:
+            nuovo_tp = prezzo_medio * (1 + ratio_volatilità / 100)
+            aggiorna_tp_limit_chirurgico(size_attuale, nuovo_tp)
+            ultima_size_tracciata = size_attuale
+            
+        # 2. Se siamo a zero, resetta tutto
+        elif size_attuale == 0 and ultima_size_tracciata != 0:
+            print("🧹 Pulizia completa per nuovo ciclo.")
+            try: session.cancel_all_orders(category="linear", symbol=SYMBOL)
+            except: pass
+            
+            # Entrata
+            session.place_order(category="linear", symbol=SYMBOL, side="Buy", 
+                                orderType="Market", qty=str(SIZE_LIVELLO_1), positionIdx=0)
+            
+            time.sleep(3)
+            s_nuova, p_ingresso = recupera_stato_posizione()
+            
+            # Piazza la griglia di acquisto (che non verrà toccata dai futuri aggiornamenti TP)
+            for i, size in enumerate(RESTANTI_LIVELLI):
+                prezzo_livello = p_ingresso * (1 - (ratio_volatilità * (i + 1)) / 100)
                 session.place_order(category="linear", symbol=SYMBOL, side="Buy", 
-                                    orderType="Market", qty=str(SIZE_LIVELLO_1), positionIdx=0)
-                
-                time.sleep(3) # Attesa allineamento
-                s_nuova, p_ingresso = recupera_stato_posizione()
-                
-                if s_nuova > 0:
-                    piazza_restante_griglia_limit(p_ingresso, ratio_volatilità)
-                    ultima_size_tracciata = s_nuova
-                    continue 
+                                    orderType="Limit", qty=str(size), price=str(round(prezzo_livello, 4)), positionIdx=0)
+            
+            ultima_size_tracciata = s_nuova
+            print("✅ Griglia di acquisto piazzata. Pronti.")
 
         time.sleep(3)
     except Exception as e:
