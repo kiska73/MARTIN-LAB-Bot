@@ -14,29 +14,21 @@ session = HTTP(testnet=False, demo=False, api_key=API_KEY, api_secret=API_SECRET
 GRID_SIZES_STANDARD = [2, 2, 2, 2, 5, 7, 9, 11, 15, 20, 25, 30, 50]
 
 # =====================================================================
-# LOGICA VOLATILITA E INDICATORI
+# FUNZIONI DI SUPPORTO
 # =====================================================================
 
 def get_config_volatilita():
-    """Confronta ultima candela 4H con le 20 precedenti."""
     try:
         klines = session.get_kline(category="linear", symbol=SYMBOL, interval="240", limit=21)
         data = klines["result"]["list"]
-        
-        # Volatilità ultima candela
         h_last, l_last = float(data[0][2]), float(data[0][3])
         vol_last = (h_last - l_last) / l_last
-        
-        # Volatilità media 20 precedenti
         ranges = [(float(k[2]) - float(k[3])) / float(k[3]) for k in data[1:]]
         vol_avg = sum(ranges) / len(ranges)
-        
-        # Se ultima candela è 1.5x più volatile della media -> Alta Vol
         return [2] * 13 if vol_last > (vol_avg * 1.5) else GRID_SIZES_STANDARD
     except: return GRID_SIZES_STANDARD
 
 def get_bollinger_banda_inf_4h():
-    """Calcola Banda Inferiore Bollinger 4H."""
     try:
         klines = session.get_kline(category="linear", symbol=SYMBOL, interval="240", limit=20)
         closes = [float(k[4]) for k in klines["result"]["list"]]
@@ -71,7 +63,7 @@ def aggiorna_tp_limit_chirurgico(size, tp):
 ultima_size = -1.0
 prezzo_ingresso = 0.0
 
-print("🚀 BOT AVVIATO: Bollinger Breakout + Volatilità 4H + Paracadute 50%.")
+print("🚀 BOT LIVE AVVIATO: Bollinger SL su Minimo 4H + Volatilità + Paracadute 60%.")
 
 while True:
     try:
@@ -79,22 +71,28 @@ while True:
         ticker = session.get_tickers(category="linear", symbol=SYMBOL)
         prezzo = float(ticker["result"]["list"][0]["lastPrice"])
         
-        # 1. SL DINAMICO (Bollinger + Paracadute 50%)
+        # 1. SL DINAMICO (Logica Candela Chiusa + Paracadute)
         if size > 0 and prezzo_ingresso > 0:
+            # Analisi per SL su candela chiusa
+            klines = session.get_kline(category="linear", symbol=SYMBOL, interval="240", limit=2)
+            candela_chiusa = klines["result"]["list"][1]
+            close_candela = float(candela_chiusa[4])
+            low_candela = float(candela_chiusa[3])
             banda_inf = get_bollinger_banda_inf_4h()
             pnl = (prezzo / prezzo_ingresso) - 1
-            if prezzo < banda_inf or pnl <= -0.60:
-                print(f"🚨 SL DINAMICO INNESCATO (Prezzo: {prezzo} < Banda: {round(banda_inf, 4)} o PnL: {round(pnl, 2)})")
+            
+            # SL su minimo se chiude sotto banda O Paracadute estremo
+            if (close_candela < banda_inf and prezzo <= low_candela) or pnl <= -0.60:
+                print(f"🚨 SL INNESCATO (Prezzo {prezzo} rotto minimo {low_candela})")
                 session.place_order(category="linear", symbol=SYMBOL, side="Sell", orderType="Market", qty=str(size), positionIdx=0, reduceOnly=True)
                 ultima_size = -1.0
                 prezzo_ingresso = 0.0
                 continue
 
-        # 2. RESET E PIAZZAMENTO
+        # 2. RESET E PIAZZAMENTO GRIGLIA
         elif size == 0 and ultima_size != 0:
             print("🧹 Analisi 4H in corso...")
             lista_sizes = get_config_volatilita()
-            
             try: session.cancel_all_orders(category="linear", symbol=SYMBOL)
             except: pass
             
@@ -111,7 +109,7 @@ while True:
                 aggiorna_tp_limit_chirurgico(s_nuova, p_ing * 1.007)
                 ultima_size = s_nuova
 
-        # 3. Aggiorna TP
+        # 3. Aggiorna TP chirurgico
         if size > 0 and size != ultima_size:
             aggiorna_tp_limit_chirurgico(size, avg_price * 1.007)
             ultima_size = size
