@@ -12,7 +12,7 @@ SYMBOL = "LABUSDT"
 
 session = HTTP(testnet=False, api_key=API_KEY, api_secret=API_SECRET)
 
-GRID_SIZES = [2, 2, 2, 2, 5, 7, 9, 11, 15, 20, 25, 30, 50]
+GRID_SIZES = [2, 2, 2, 3, 5, 7, 9, 11, 15, 20, 30, 45]
 COOLDOWN = 18  # secondi
 
 # Stato globale
