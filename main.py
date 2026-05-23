@@ -19,7 +19,7 @@ current_mode = "AGGRESSIVE"
 # Modalità Aggressiva
 AGGRESSIVE_GRID = [2, 2, 2, 3, 5, 7, 9, 11, 15, 20, 30, 45]
 AGGRESSIVE_TP = 0.90
-AGGRESSIVE_SPACING = 1.25
+AGGRESSIVE_SPACING = 1.2
 
 # Modalità Conservativa
 CONSERVATIVE_QTY = 3
