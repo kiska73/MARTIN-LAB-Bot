@@ -13,7 +13,7 @@ SYMBOL = "LABUSDT"
 session = HTTP(testnet=False, api_key=API_KEY, api_secret=API_SECRET)
 
 GRID_SIZES = [2, 2, 2, 2, 5, 7, 9, 11, 15, 20, 25, 30, 50]
-COOLDOWN = 10 
+COOLDOWN = 18
 
 # Stato globale
 last_trade_time = 0
