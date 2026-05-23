@@ -10,7 +10,6 @@ API_KEY = os.environ.get("BYBIT_API_KEY")
 API_SECRET = os.environ.get("BYBIT_API_SECRET")
 SYMBOL = "LABUSDT"
 
-# Inizializzazione sessione
 session = HTTP(testnet=False, api_key=API_KEY, api_secret=API_SECRET)
 
 GRID_SIZES = [2, 2, 2, 2, 5, 7, 9, 11, 15, 20, 25, 30, 50]
@@ -21,7 +20,6 @@ last_trade_time = 0
 last_checked_candle_ts = 0
 
 def get_bollinger_bands(symbol, period=40, std_dev=2):
-    # Recupera ultime 42 candele 4H (240 min)
     data = session.get_kline(category="linear", symbol=symbol, interval="240", limit=period + 2)
     df = pd.DataFrame(data['result']['list'], columns=['ts', 'open', 'high', 'low', 'close', 'vol', 'turnover'])
     df['close'] = df['close'].astype(float)
@@ -31,59 +29,65 @@ def get_bollinger_bands(symbol, period=40, std_dev=2):
     sma = df['close'].rolling(window=period).mean()
     std = df['close'].rolling(window=period).std()
     lower_band = sma - (std * std_dev)
-    
-    # Restituisce: [0] ts ultima chiusa, [1] banda, [2] minimo candela chiusa
     return df['ts'].iloc[-2], lower_band.iloc[-2], df['low'].iloc[-2]
 
-def has_open_tp(symbol):
-    orders = session.get_open_orders(category="linear", symbol=symbol, side="Sell")
-    return len(orders["result"]["list"]) > 0
-
-print("🚀 BOT AVVIATO - MONITORAGGIO 4H ATTIVO")
+print("🚀 BOT AVVIATO - TP DINAMICO E SENTINELLA SL ATTIVI")
 
 while True:
     try:
         now = time.time()
-        # Ottieni posizione
-        pos_data = session.get_positions(category="linear", symbol=SYMBOL)["result"]["list"][0]
-        size = float(pos_data["size"])
-        avg = float(pos_data["avgPrice"])
+        pos_list = session.get_positions(category="linear", symbol=SYMBOL)["result"]["list"]
+        pos = pos_list[0]
+        size = float(pos["size"])
+        avg = float(pos["avgPrice"])
         
+        active_orders = session.get_open_orders(category="linear", symbol=SYMBOL)["result"]["list"]
+        tp_orders = [o for o in active_orders if o["side"] == "Sell" and o["orderType"] == "Limit"]
+        sl_orders = [o for o in active_orders if o["side"] == "Sell" and o["orderType"] == "Market" and "triggerPrice" in o]
+
         # 1. POSIZIONE APERTA
         if size > 0:
-            # Controllo SL a chiusura candela 4H
+            # A. SL Sentinella (a chiusura candela 4H)
             ts, lower_band, last_low = get_bollinger_bands(SYMBOL)
-            
-            # Se la candela è chiusa (ts diverso dal precedente) e sono passati 3 secondi
             if ts != last_checked_candle_ts:
                 if now > (ts/1000 + 14400 + 3):
-                    if last_low < lower_band:
-                        print(f"🚨 SL TRIGGERED! Minimo {last_low} < Banda {round(lower_band, 4)}")
-                        session.cancel_all_orders(category="linear", symbol=SYMBOL)
-                        session.place_order(category="linear", symbol=SYMBOL, side="Sell", 
-                                            orderType="Market", qty=str(size), positionIdx=0, reduceOnly=True)
+                    if last_low < lower_band and not sl_orders:
+                        print(f"📉 Chiusura sotto banda! Imposto SL Sentinella a: {last_low}")
+                        session.place_order(
+                            category="linear", symbol=SYMBOL, side="Sell", orderType="Market",
+                            qty=str(size), triggerPrice=str(round(last_low, 4)), 
+                            triggerDirection="BelowPrice", triggerBy="LastPrice",
+                            positionIdx=0, reduceOnly=True
+                        )
                     last_checked_candle_ts = ts
             
-            # Gestione TP (se non c'è, lo piazza)
-            if not has_open_tp(SYMBOL):
+            # B. TP Dinamico (sposta il TP se il prezzo medio cambia)
+            target_price = round(avg * 1.009, 4)
+            if tp_orders:
+                current_tp = float(tp_orders[0]["price"])
+                # Se la differenza tra il TP attuale e quello nuovo è significativa, aggiorniamo
+                if abs(current_tp - target_price) > 0.0001:
+                    print(f"🔄 Aggiorno TP: nuovo target {target_price}")
+                    session.cancel_order(category="linear", symbol=SYMBOL, orderId=tp_orders[0]["orderId"])
+                    session.place_order(category="linear", symbol=SYMBOL, side="Sell", 
+                                        orderType="Limit", qty=str(size), price=str(target_price), 
+                                        positionIdx=0, reduceOnly=True)
+            else:
                 session.place_order(category="linear", symbol=SYMBOL, side="Sell", 
-                                    orderType="Limit", qty=str(size), price=str(round(avg * 1.009, 4)), 
+                                    orderType="Limit", qty=str(size), price=str(target_price), 
                                     positionIdx=0, reduceOnly=True)
         
         # 2. POSIZIONE CHIUSA -> NUOVA ENTRATA
         elif size == 0 and (now - last_trade_time > COOLDOWN):
-            print("🧹 Nuovo ciclo di ingresso")
+            print("🧹 Reset ciclo e nuova entrata")
             session.cancel_all_orders(category="linear", symbol=SYMBOL)
-            
-            # Entry Market
             session.place_order(category="linear", symbol=SYMBOL, side="Buy", orderType="Market", 
                                 qty=str(GRID_SIZES[0]), positionIdx=0)
             time.sleep(2)
             
-            # Aggiorna avg prezzo dopo entry
-            pos_data = session.get_positions(category="linear", symbol=SYMBOL)["result"]["list"][0]
-            if float(pos_data["size"]) > 0:
-                avg = float(pos_data["avgPrice"])
+            new_pos = session.get_positions(category="linear", symbol=SYMBOL)["result"]["list"][0]
+            if float(new_pos["size"]) > 0:
+                avg = float(new_pos["avgPrice"])
                 for i in range(1, len(GRID_SIZES)):
                     price = avg * (1 - (1.2 * i) / 100)
                     session.place_order(category="linear", symbol=SYMBOL, side="Buy", orderType="Limit", 
