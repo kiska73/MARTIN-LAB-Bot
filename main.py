@@ -16,14 +16,17 @@ session = HTTP(testnet=False, api_key=API_KEY, api_secret=API_SECRET)
 current_mode = "AGGRESSIVE"
 pause_until_next_candle = False
 
-# Griglia Quantità (stessa per entrambe le modalità)
+# Griglia Quantità (stessa per entrambe)
 GRID_SIZES = [2, 2, 2, 3, 4, 5, 6, 8, 10, 13, 16, 20, 25]
 
+# ==================== PARAMETRI MODALITÀ ====================
 AGGRESSIVE_TP = 0.90
-AGGRESSIVE_SPACING = 1.50
+AGGRESSIVE_BASE_SPACING = 1.50
+AGGRESSIVE_COEFF = 0.12        # ← come hai chiesto
 
 CONSERVATIVE_TP = 1.20
-CONSERVATIVE_SPACING = 3.00   # Solo questo cambia
+CONSERVATIVE_BASE_SPACING = 2.80   # ← come hai chiesto
+CONSERVATIVE_COEFF = 0.22      # ← come hai chiesto
 
 COOLDOWN = 18
 last_candle_ts = 0
@@ -64,14 +67,15 @@ def get_volatility_data(symbol):
 
 def should_check_candle():
     now_utc = datetime.now(timezone.utc)
+    hour = now_utc.hour
     minute = now_utc.minute
     second = now_utc.second
-    if minute % 4 == 0 and 5 <= second <= 10:
+    if hour % 4 == 0 and minute == 0 and 5 <= second <= 10:
         return True
     return False
 
 
-print("🚀 BOT MASTER - Griglia Adattiva (solo spacing cambia)")
+print("🚀 BOT MASTER - Spacing Progressivo Personalizzato")
 
 while True:
     try:
@@ -86,7 +90,7 @@ while True:
         tp_orders = [o for o in active_orders if o["side"] == "Sell" and o["orderType"] == "Limit"]
         sl_orders = [o for o in active_orders if o.get("triggerPrice")]
 
-        # ==================== CONTROLLO +5 SECONDI ====================
+        # ==================== CONTROLLO +5s DOPO CHIUSURA 4H ====================
         if should_check_candle():
             vol_data = get_volatility_data(SYMBOL)
             
@@ -98,7 +102,6 @@ while True:
                     print(f"🔄 CAMBIO MODALITÀ → {new_mode} (BB Width: {vol_data['bb_width']}%)")
                     current_mode = new_mode
 
-                # Filtro Pausa
                 if price:
                     distance = ((price - vol_data['lower_band']) / vol_data['lower_band']) * 100
                     if distance <= 3.0:
@@ -140,21 +143,25 @@ while True:
                 session.cancel_all_orders(category="linear", symbol=SYMBOL)
                 time.sleep(1)
 
-                spacing = CONSERVATIVE_SPACING if current_mode == "CONSERVATIVE" else AGGRESSIVE_SPACING
+                # Scegli i parametri in base alla modalità
+                base_spacing = CONSERVATIVE_BASE_SPACING if current_mode == "CONSERVATIVE" else AGGRESSIVE_BASE_SPACING
+                coeff = CONSERVATIVE_COEFF if current_mode == "CONSERVATIVE" else AGGRESSIVE_COEFF
                 max_levels = 13
 
-                session.place_order(category="linear", symbol=SYMBOL, side="Buy", 
-                                  orderType="Market", qty=str(GRID_SIZES[0]))
+                session.place_order(category="linear", symbol=SYMBOL, side="Buy", orderType="Market", qty=str(GRID_SIZES[0]))
                 time.sleep(2)
 
                 new_pos = session.get_positions(category="linear", symbol=SYMBOL)["result"]["list"][0]
                 if float(new_pos["size"]) > 0:
                     avg = float(new_pos["avgPrice"])
-                    print(f"✅ Entrata @ {avg:.4f} | Modalità: {current_mode} (Spacing: {spacing}%)")
+                    print(f"✅ Entrata @ {avg:.4f} | Modalità: {current_mode}")
 
                     for i in range(1, max_levels):
-                        entry_price = round(avg * (1 - (spacing * i) / 100), 4)
+                        # Spacing Progressivo
+                        dynamic_spacing = base_spacing * (1 + i * coeff)
+                        entry_price = round(avg * (1 - dynamic_spacing / 100), 4)
                         qty = GRID_SIZES[i] if i < len(GRID_SIZES) else 15
+                        
                         session.place_order(category="linear", symbol=SYMBOL, side="Buy",
                                           orderType="Limit", qty=str(qty), price=str(entry_price))
                     
