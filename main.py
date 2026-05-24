@@ -55,7 +55,7 @@ def get_volatility_data(symbol):
         return None
 
 def get_spacing(i, mode):
-    """Fasce esatte come hai chiesto"""
+    """Fasce di spacing"""
     if mode == "AGGRESSIVE":
         if i <= 3:   return 1.0
         elif i <= 6: return 1.2
@@ -74,7 +74,7 @@ def should_check_candle():
     return False
 
 
-print("🚀 BOT MASTER FINALE - Griglia a Fasce Corretta")
+print("🚀 BOT MASTER - Griglia a Fasce Corretta")
 
 while True:
     try:
@@ -92,7 +92,6 @@ while True:
         # ==================== CONTROLLO 4H ====================
         if should_check_candle():
             vol_data = get_volatility_data(SYMBOL)
-            
             if vol_data and vol_data['ts'] != last_candle_ts:
                 print(f"📌 Candela 4H chiusa → {datetime.now().strftime('%H:%M:%S')}")
 
@@ -101,18 +100,6 @@ while True:
                     print(f"🔄 CAMBIO MODALITÀ → {new_mode}")
                     current_mode = new_mode
 
-                # SL Sentinella
-                if size > 0 and vol_data['candle_low'] < vol_data['lower_band']:
-                    if price and price <= vol_data['candle_low'] * 0.997:
-                        print(f"🚨 FLASH CRASH → Chiusura immediata")
-                        session.place_order(category="linear", symbol=SYMBOL, side="Sell", orderType="Market", qty=str(size), reduceOnly=True)
-                    elif not sl_orders:
-                        print(f"📉 SL Sentinella @ {vol_data['candle_low']}")
-                        session.place_order(category="linear", symbol=SYMBOL, side="Sell", orderType="Market",
-                                          qty=str(size), triggerPrice=str(vol_data['candle_low']),
-                                          triggerDirection=2, triggerBy="LastPrice", reduceOnly=True)
-
-                # Pausa
                 if price and vol_data.get('lower_band'):
                     distance = ((price - vol_data['lower_band']) / vol_data['lower_band']) * 100
                     pause_until_next_candle = (distance <= 3.0)
