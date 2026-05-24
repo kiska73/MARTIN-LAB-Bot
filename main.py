@@ -5,7 +5,7 @@ from pybit.unified_trading import HTTP
 from datetime import datetime, timezone
 
 # ==========================================================
-# CONFIG - GRIGLIA FISSA 1.5%
+# CONFIG
 # ==========================================================
 API_KEY = os.environ.get("BYBIT_API_KEY")
 API_SECRET = os.environ.get("BYBIT_API_SECRET")
@@ -27,6 +27,7 @@ CONSERVATIVE_SPACING = 2.80
 COOLDOWN = 18
 last_candle_ts = 0
 last_trade_time = 0
+last_entry_time = 0   # ← Nuovo per cooldown più forte
 
 def get_current_price():
     try:
@@ -71,7 +72,7 @@ def should_check_candle():
     return False
 
 
-print("🚀 BOT MASTER - Griglia fissa 1.5% + Cooldown corretto")
+print("🚀 BOT MASTER - FIX Cooldown + Griglia 1.5%")
 
 while True:
     try:
@@ -86,7 +87,7 @@ while True:
         tp_orders = [o for o in active_orders if o["side"] == "Sell" and o["orderType"] == "Limit"]
         sl_orders = [o for o in active_orders if o.get("triggerPrice")]
 
-        # ==================== CONTROLLO +5s DOPO CHIUSURA 4H ====================
+        # ==================== CONTROLLO CANDela 4H ====================
         if should_check_candle():
             vol_data = get_volatility_data(SYMBOL)
             
@@ -102,7 +103,7 @@ while True:
                     distance = ((price - vol_data['lower_band']) / vol_data['lower_band']) * 100
                     if distance <= 3.0:
                         pause_until_next_candle = True
-                        print(f"⛔ PAUSA ATTIVATA - Troppo vicino Lower Band ({distance:.1f}%)")
+                        print(f"⛔ PAUSA ATTIVATA ({distance:.1f}%)")
                     else:
                         pause_until_next_candle = False
                 
@@ -110,6 +111,7 @@ while True:
 
         # ==================== POSIZIONE APERTA ====================
         if size > 0:
+            # SL Sentinella + TP Dinamico (codice invariato)
             if 'vol_data' in locals() and vol_data and vol_data['candle_low'] < vol_data['lower_band']:
                 if price and price <= vol_data['candle_low'] * 0.997:
                     print(f"🚨 FLASH CRASH → Chiusura immediata")
@@ -131,18 +133,17 @@ while True:
                 session.place_order(category="linear", symbol=SYMBOL, side="Sell", orderType="Limit", qty=str(size), price=str(target_tp), reduceOnly=True)
 
         # ==================== NUOVA ENTRATA ====================
-        elif size == 0 and (now - last_trade_time > COOLDOWN):
+        elif size == 0 and (now - last_trade_time > COOLDOWN) and (now - last_entry_time > COOLDOWN):
             if pause_until_next_candle:
                 print("⏳ In pausa - Prezzo vicino Lower Band")
             else:
                 print(f"🧹 Nuova entrata in modalità {current_mode}")
                 session.cancel_all_orders(category="linear", symbol=SYMBOL)
-                time.sleep(1.2)
+                time.sleep(1.5)
 
                 spacing = CONSERVATIVE_SPACING if current_mode == "CONSERVATIVE" else AGGRESSIVE_SPACING
-                max_levels = 13
+                max_levels = 10   # ← Ridotto per non mettere troppi ordini
 
-                # Entrata iniziale
                 session.place_order(category="linear", symbol=SYMBOL, side="Buy", orderType="Market", qty=str(GRID_SIZES[0]))
                 time.sleep(2.5)
 
@@ -157,7 +158,8 @@ while True:
                         session.place_order(category="linear", symbol=SYMBOL, side="Buy",
                                           orderType="Limit", qty=str(qty), price=str(entry_price))
                     
-                    last_trade_time = now   # ← Aggiornato SOLO dopo entrata riuscita
+                    last_trade_time = now
+                    last_entry_time = now   # ← Doppio controllo cooldown
 
         time.sleep(5)
 
