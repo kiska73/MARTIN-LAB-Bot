@@ -19,10 +19,10 @@ pause_until_next_candle = False
 GRID_SIZES = [2, 2, 2, 3, 4, 5, 6, 8, 10, 13, 16, 20, 25]
 
 AGGRESSIVE_TP = 0.90
-AGGRESSIVE_SPACING = 1.50      # 1.5% per livello
+AGGRESSIVE_SPACING = 1.40      # 1.5% per livello
 
 CONSERVATIVE_TP = 1.20
-CONSERVATIVE_SPACING = 2.80    # 2.8% per livello
+CONSERVATIVE_SPACING = 2.90    # 2.8% per livello
 
 COOLDOWN = 18
 last_candle_ts = 0
