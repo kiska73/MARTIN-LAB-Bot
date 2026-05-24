@@ -5,7 +5,7 @@ from pybit.unified_trading import HTTP
 from datetime import datetime, timezone
 
 # ==========================================================
-# CONFIG - 1.5% FISSO
+# CONFIG - GRIGLIA A SPAZI UGUALI
 # ==========================================================
 API_KEY = os.environ.get("BYBIT_API_KEY")
 API_SECRET = os.environ.get("BYBIT_API_SECRET")
@@ -19,10 +19,10 @@ pause_until_next_candle = False
 GRID_SIZES = [2, 2, 2, 3, 4, 5, 6, 8, 10, 13, 16, 20, 25]
 
 AGGRESSIVE_TP = 0.90
-AGGRESSIVE_SPACING = 1.50      # FISSO 1.5%
+AGGRESSIVE_SPACING = 1.50      # 1.5% per livello
 
 CONSERVATIVE_TP = 1.20
-CONSERVATIVE_SPACING = 2.80    # FISSO 2.8%
+CONSERVATIVE_SPACING = 2.80    # 2.8% per livello
 
 COOLDOWN = 18
 last_candle_ts = 0
@@ -71,7 +71,7 @@ def should_check_candle():
     return False
 
 
-print("🚀 BOT MASTER - Spacing FISSO 1.5% / 2.8%")
+print("🚀 BOT MASTER - Griglia a Spazi Uguali (1.5% / 2.8%)")
 
 while True:
     try:
@@ -151,7 +151,7 @@ while True:
                     print(f"✅ Entrata @ {avg:.4f} | Modalità: {current_mode} (Spacing: {spacing}%)")
 
                     for i in range(1, max_levels):
-                        entry_price = round(avg * (1 - (spacing * i) / 100), 4)
+                        entry_price = round(avg * (1 - (spacing * i) / 100), 4)   # ← Spazi Uguali
                         qty = GRID_SIZES[i] if i < len(GRID_SIZES) else 15
                         session.place_order(category="linear", symbol=SYMBOL, side="Buy",
                                           orderType="Limit", qty=str(qty), price=str(entry_price))
