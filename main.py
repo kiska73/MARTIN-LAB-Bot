@@ -5,7 +5,7 @@ from pybit.unified_trading import HTTP
 from datetime import datetime, timezone
 
 # ==========================================================
-# CONFIG - GRIGLIA A SPAZI UGUALI
+# CONFIG - GRIGLIA FISSA 1.5%
 # ==========================================================
 API_KEY = os.environ.get("BYBIT_API_KEY")
 API_SECRET = os.environ.get("BYBIT_API_SECRET")
@@ -19,10 +19,10 @@ pause_until_next_candle = False
 GRID_SIZES = [2, 2, 2, 3, 4, 5, 6, 8, 10, 13, 16, 20, 25]
 
 AGGRESSIVE_TP = 0.90
-AGGRESSIVE_SPACING = 1.40      # 1.5% per livello
+AGGRESSIVE_SPACING = 1.50
 
 CONSERVATIVE_TP = 1.20
-CONSERVATIVE_SPACING = 2.90    # 2.8% per livello
+CONSERVATIVE_SPACING = 2.80
 
 COOLDOWN = 18
 last_candle_ts = 0
@@ -71,7 +71,7 @@ def should_check_candle():
     return False
 
 
-print("🚀 BOT MASTER - Griglia a Spazi Uguali (1.5% / 2.8%)")
+print("🚀 BOT MASTER - Griglia fissa 1.5% + Cooldown corretto")
 
 while True:
     try:
@@ -137,26 +137,27 @@ while True:
             else:
                 print(f"🧹 Nuova entrata in modalità {current_mode}")
                 session.cancel_all_orders(category="linear", symbol=SYMBOL)
-                time.sleep(1)
+                time.sleep(1.2)
 
                 spacing = CONSERVATIVE_SPACING if current_mode == "CONSERVATIVE" else AGGRESSIVE_SPACING
                 max_levels = 13
 
+                # Entrata iniziale
                 session.place_order(category="linear", symbol=SYMBOL, side="Buy", orderType="Market", qty=str(GRID_SIZES[0]))
                 time.sleep(2.5)
 
                 new_pos = session.get_positions(category="linear", symbol=SYMBOL)["result"]["list"][0]
                 if float(new_pos["size"]) > 0:
                     avg = float(new_pos["avgPrice"])
-                    print(f"✅ Entrata @ {avg:.4f} | Modalità: {current_mode} (Spacing: {spacing}%)")
+                    print(f"✅ Entrata @ {avg:.4f} | Modalità: {current_mode}")
 
                     for i in range(1, max_levels):
-                        entry_price = round(avg * (1 - (spacing * i) / 100), 4)   # ← Spazi Uguali
+                        entry_price = round(avg * (1 - (spacing * i) / 100), 4)
                         qty = GRID_SIZES[i] if i < len(GRID_SIZES) else 15
                         session.place_order(category="linear", symbol=SYMBOL, side="Buy",
                                           orderType="Limit", qty=str(qty), price=str(entry_price))
                     
-                    last_trade_time = now
+                    last_trade_time = now   # ← Aggiornato SOLO dopo entrata riuscita
 
         time.sleep(5)
 
