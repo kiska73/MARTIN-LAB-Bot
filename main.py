@@ -20,22 +20,51 @@ GRID_SIZES = [2, 2, 2, 3, 4, 5, 6, 8, 10, 13, 16, 20, 25]
 
 COOLDOWN = 20
 
+def get_current_price():
+    try:
+        ticker = session.get_tickers(category="linear", symbol=SYMBOL)
+        return float(ticker['result']['list'][0]['lastPrice'])
+    except:
+        return None
+
+def get_volatility_data(symbol):
+    try:
+        data = session.get_kline(category="linear", symbol=symbol, interval="240", limit=42)
+        df = pd.DataFrame(data['result']['list'], columns=['ts', 'open', 'high', 'low', 'close', 'vol', 'turnover'])
+        
+        df['close'] = df['close'].astype(float)
+        df['low'] = df['low'].astype(float)
+        df['ts'] = df['ts'].astype(int)
+        
+        sma = df['close'].rolling(window=40).mean()
+        std = df['close'].rolling(window=40).std()
+        lower_band = sma - (std * 2)
+        
+        bb_width_percent = ((sma.iloc[-1] - lower_band.iloc[-1]) / sma.iloc[-1]) * 100
+        
+        return {
+            'ts': df['ts'].iloc[-1],
+            'bb_width': round(bb_width_percent, 2),
+            'candle_low': round(df['low'].iloc[-1], 4),
+            'lower_band': round(lower_band.iloc[-1], 4),
+        }
+    except Exception as e:
+        print(f"Errore Kline: {e}")
+        return None
+
 def get_spacing(i, mode):
-    """Fasce di spacing"""
     if mode == "AGGRESSIVE":
         if i <= 3:   return 1.0
         elif i <= 6: return 1.2
         elif i <= 9: return 1.5
         else:        return 1.8
-    else:  # CONSERVATIVE
+    else:
         if i <= 3:   return 2.0
         elif i <= 6: return 2.4
         elif i <= 9: return 2.8
         else:        return 3.2
 
-
 def should_check_candle():
-    """Controllo chiusura candela 4H"""
     now_utc = datetime.now(timezone.utc)
     hour = now_utc.hour
     minute = now_utc.minute
@@ -45,7 +74,7 @@ def should_check_candle():
     return False
 
 
-print("🚀 BOT MASTER FINALE - Griglia a Fasce + SL a chiusura 4H")
+print("🚀 BOT MASTER FINALE - Griglia a Fasce")
 
 while True:
     try:
@@ -60,14 +89,13 @@ while True:
         tp_orders = [o for o in active_orders if o["side"] == "Sell" and o["orderType"] == "Limit"]
         sl_orders = [o for o in active_orders if o.get("triggerPrice")]
 
-        # ==================== CONTROLLO CHIUSURA CANDELA 4H ====================
+        # ==================== CONTROLLO CHIUSURA 4H ====================
         if should_check_candle():
             vol_data = get_volatility_data(SYMBOL)
             
             if vol_data and vol_data['ts'] != last_candle_ts:
                 print(f"📌 Candela 4H chiusa → {datetime.now().strftime('%H:%M:%S')}")
 
-                # Cambio Modalità
                 new_mode = "CONSERVATIVE" if vol_data.get('bb_width', 0) > 40 else "AGGRESSIVE"
                 if new_mode != current_mode:
                     print(f"🔄 CAMBIO MODALITÀ → {new_mode}")
@@ -77,9 +105,8 @@ while True:
                 if vol_data['candle_low'] < vol_data['lower_band']:
                     if price and price <= vol_data['candle_low'] * 0.997:
                         print(f"🚨 FLASH CRASH → Chiusura immediata")
-                        session.place_order(category="linear", symbol=SYMBOL, side="Sell", 
-                                          orderType="Market", qty=str(size), reduceOnly=True)
-                    elif not sl_orders:
+                        session.place_order(category="linear", symbol=SYMBOL, side="Sell", orderType="Market", qty=str(size), reduceOnly=True)
+                    elif not sl_orders and size > 0:
                         print(f"📉 SL Sentinella @ {vol_data['candle_low']}")
                         session.place_order(category="linear", symbol=SYMBOL, side="Sell", orderType="Market",
                                           qty=str(size), triggerPrice=str(vol_data['candle_low']),
@@ -105,16 +132,14 @@ while True:
             if tp_orders:
                 if abs(float(tp_orders[0]["price"]) - target_tp) > 0.0002:
                     session.cancel_order(category="linear", symbol=SYMBOL, orderId=tp_orders[0]["orderId"])
-                    session.place_order(category="linear", symbol=SYMBOL, side="Sell", orderType="Limit", 
-                                      qty=str(size), price=str(target_tp), reduceOnly=True)
+                    session.place_order(category="linear", symbol=SYMBOL, side="Sell", orderType="Limit", qty=str(size), price=str(target_tp), reduceOnly=True)
             else:
-                session.place_order(category="linear", symbol=SYMBOL, side="Sell", orderType="Limit", 
-                                  qty=str(size), price=str(target_tp), reduceOnly=True)
+                session.place_order(category="linear", symbol=SYMBOL, side="Sell", orderType="Limit", qty=str(size), price=str(target_tp), reduceOnly=True)
 
         # ==================== NUOVA ENTRATA ====================
         elif size == 0 and (now - last_trade_time > COOLDOWN):
             if pause_until_next_candle:
-                print("⏳ In pausa - Prezzo vicino Lower Band")
+                print("⏳ In pausa...")
             else:
                 print(f"🧹 Nuova entrata in modalità {current_mode}")
                 session.cancel_all_orders(category="linear", symbol=SYMBOL)
