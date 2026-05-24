@@ -5,7 +5,7 @@ from pybit.unified_trading import HTTP
 from datetime import datetime, timezone
 
 # ==========================================================
-# CONFIG
+# CONFIG - COME VUOI TU
 # ==========================================================
 API_KEY = os.environ.get("BYBIT_API_KEY")
 API_SECRET = os.environ.get("BYBIT_API_SECRET")
@@ -13,23 +13,21 @@ SYMBOL = "LABUSDT"
 
 session = HTTP(testnet=False, api_key=API_KEY, api_secret=API_SECRET)
 
-# ==================== MODALITÀ ====================
 current_mode = "AGGRESSIVE"
 pause_until_next_candle = False
 
-AGGRESSIVE_GRID = [2, 2, 2, 3, 5, 7, 9, 11, 15, 20, 30, 45]
-AGGRESSIVE_TP = 0.90
-AGGRESSIVE_SPACING = 1.20
+# Griglia Quantità (stessa per entrambe le modalità)
+GRID_SIZES = [2, 2, 2, 3, 4, 5, 6, 8, 10, 13, 16, 20, 25]
 
-CONSERVATIVE_QTY = 3
-CONSERVATIVE_LEVELS = 20
-CONSERVATIVE_SPACING = 1.50
+AGGRESSIVE_TP = 0.90
+AGGRESSIVE_SPACING = 1.50
+
 CONSERVATIVE_TP = 1.20
+CONSERVATIVE_SPACING = 3.00   # Solo questo cambia
 
 COOLDOWN = 18
 last_candle_ts = 0
 last_trade_time = 0
-last_checked_candle = 0   # Per evitare doppi check
 
 def get_current_price():
     try:
@@ -65,18 +63,15 @@ def get_volatility_data(symbol):
 
 
 def should_check_candle():
-    """Controlla SOLO una volta intorno ai +5 / +12 secondi dopo chiusura candela 4H"""
     now_utc = datetime.now(timezone.utc)
     minute = now_utc.minute
     second = now_utc.second
-    
-    # Chiusura alle ore: 00, 04, 08, 12, 16, 20
-    if minute == 0 and 5 <= second <= 12:        # Solo questa finestra stretta
+    if minute % 4 == 0 and 5 <= second <= 10:
         return True
     return False
 
 
-print("🚀 BOT MASTER - Controllo UNA sola volta a +5 secondi dopo chiusura 4H")
+print("🚀 BOT MASTER - Griglia Adattiva (solo spacing cambia)")
 
 while True:
     try:
@@ -91,25 +86,24 @@ while True:
         tp_orders = [o for o in active_orders if o["side"] == "Sell" and o["orderType"] == "Limit"]
         sl_orders = [o for o in active_orders if o.get("triggerPrice")]
 
-        # ==================== CONTROLLO UNA SOLA VOLTA ALLA CHIUSURA ====================
+        # ==================== CONTROLLO +5 SECONDI ====================
         if should_check_candle():
             vol_data = get_volatility_data(SYMBOL)
             
             if vol_data and vol_data['ts'] != last_candle_ts:
-                print(f"📌 Candela 4H chiusa rilevata → {datetime.now().strftime('%H:%M:%S')}")
+                print(f"📌 Candela 4H chiusa (+5s) → {datetime.now().strftime('%H:%M:%S')}")
 
-                # Cambio modalità
-                new_mode = "CONSERVATIVE" if vol_data['bb_width'] > 30 else "AGGRESSIVE"
+                new_mode = "CONSERVATIVE" if vol_data['bb_width'] > 40 else "AGGRESSIVE"
                 if new_mode != current_mode:
                     print(f"🔄 CAMBIO MODALITÀ → {new_mode} (BB Width: {vol_data['bb_width']}%)")
                     current_mode = new_mode
 
-                # Filtro Sicurezza
+                # Filtro Pausa
                 if price:
                     distance = ((price - vol_data['lower_band']) / vol_data['lower_band']) * 100
                     if distance <= 3.0:
                         pause_until_next_candle = True
-                        print(f"⛔ PAUSA: Prezzo troppo vicino Lower Band ({distance:.1f}%)")
+                        print(f"⛔ PAUSA ATTIVATA - Troppo vicino Lower Band ({distance:.1f}%)")
                     else:
                         pause_until_next_candle = False
                 
@@ -120,64 +114,49 @@ while True:
             if 'vol_data' in locals() and vol_data and vol_data['candle_low'] < vol_data['lower_band']:
                 if price and price <= vol_data['candle_low'] * 0.997:
                     print(f"🚨 FLASH CRASH → Chiusura immediata")
-                    session.place_order(category="linear", symbol=SYMBOL, side="Sell", 
-                                      orderType="Market", qty=str(size), reduceOnly=True)
+                    session.place_order(category="linear", symbol=SYMBOL, side="Sell", orderType="Market", qty=str(size), reduceOnly=True)
                 elif not sl_orders:
                     print(f"📉 SL Sentinella @ {vol_data['candle_low']}")
-                    session.place_order(
-                        category="linear", symbol=SYMBOL, side="Sell", orderType="Market",
-                        qty=str(size), triggerPrice=str(vol_data['candle_low']),
-                        triggerDirection=2, triggerBy="LastPrice", reduceOnly=True
-                    )
+                    session.place_order(category="linear", symbol=SYMBOL, side="Sell", orderType="Market",
+                                      qty=str(size), triggerPrice=str(vol_data['candle_low']),
+                                      triggerDirection=2, triggerBy="LastPrice", reduceOnly=True)
 
-            # TP Dinamico
             tp_percent = CONSERVATIVE_TP if current_mode == "CONSERVATIVE" else AGGRESSIVE_TP
             target_tp = round(avg_price * (1 + tp_percent/100), 4)
             
             if tp_orders:
                 if abs(float(tp_orders[0]["price"]) - target_tp) > 0.0002:
                     session.cancel_order(category="linear", symbol=SYMBOL, orderId=tp_orders[0]["orderId"])
-                    session.place_order(category="linear", symbol=SYMBOL, side="Sell",
-                                      orderType="Limit", qty=str(size), price=str(target_tp), reduceOnly=True)
+                    session.place_order(category="linear", symbol=SYMBOL, side="Sell", orderType="Limit", qty=str(size), price=str(target_tp), reduceOnly=True)
             else:
-                session.place_order(category="linear", symbol=SYMBOL, side="Sell",
-                                  orderType="Limit", qty=str(size), price=str(target_tp), reduceOnly=True)
+                session.place_order(category="linear", symbol=SYMBOL, side="Sell", orderType="Limit", qty=str(size), price=str(target_tp), reduceOnly=True)
 
         # ==================== NUOVA ENTRATA ====================
         elif size == 0 and (now - last_trade_time > COOLDOWN):
             if pause_until_next_candle:
-                print("⏳ In pausa fino alla prossima candela 4H...")
+                print("⏳ In pausa - Prezzo vicino Lower Band")
             else:
                 print(f"🧹 Nuova entrata in modalità {current_mode}")
                 session.cancel_all_orders(category="linear", symbol=SYMBOL)
                 time.sleep(1)
 
-                if current_mode == "CONSERVATIVE":
-                    entry_qty = CONSERVATIVE_QTY
-                    spacing = CONSERVATIVE_SPACING
-                    max_levels = CONSERVATIVE_LEVELS
-                else:
-                    entry_qty = AGGRESSIVE_GRID[0]
-                    spacing = AGGRESSIVE_SPACING
-                    max_levels = 12
+                spacing = CONSERVATIVE_SPACING if current_mode == "CONSERVATIVE" else AGGRESSIVE_SPACING
+                max_levels = 13
 
                 session.place_order(category="linear", symbol=SYMBOL, side="Buy", 
-                                  orderType="Market", qty=str(entry_qty))
+                                  orderType="Market", qty=str(GRID_SIZES[0]))
                 time.sleep(2)
 
                 new_pos = session.get_positions(category="linear", symbol=SYMBOL)["result"]["list"][0]
                 if float(new_pos["size"]) > 0:
                     avg = float(new_pos["avgPrice"])
-                    print(f"✅ Entrata @ {avg:.4f} | Modalità: {current_mode}")
+                    print(f"✅ Entrata @ {avg:.4f} | Modalità: {current_mode} (Spacing: {spacing}%)")
 
                     for i in range(1, max_levels):
                         entry_price = round(avg * (1 - (spacing * i) / 100), 4)
-                        qty = CONSERVATIVE_QTY if current_mode == "CONSERVATIVE" else \
-                              AGGRESSIVE_GRID[i] if i < len(AGGRESSIVE_GRID) else 20
-                        session.place_order(
-                            category="linear", symbol=SYMBOL, side="Buy",
-                            orderType="Limit", qty=str(qty), price=str(entry_price)
-                        )
+                        qty = GRID_SIZES[i] if i < len(GRID_SIZES) else 15
+                        session.place_order(category="linear", symbol=SYMBOL, side="Buy",
+                                          orderType="Limit", qty=str(qty), price=str(entry_price))
                     
                     last_trade_time = now
 
