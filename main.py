@@ -27,7 +27,7 @@ CONSERVATIVE_SPACING = 2.80
 COOLDOWN = 18
 last_candle_ts = 0
 last_trade_time = 0
-last_entry_time = 0   # ← Nuovo per cooldown più forte
+last_vol_check = 0
 
 def get_current_price():
     try:
@@ -62,17 +62,17 @@ def get_volatility_data(symbol):
         return None
 
 
-def should_check_candle():
+def is_4h_candle_close():
     now_utc = datetime.now(timezone.utc)
     hour = now_utc.hour
     minute = now_utc.minute
     second = now_utc.second
-    if hour % 4 == 0 and minute == 0 and 5 <= second <= 10:
+    if hour % 4 == 0 and minute == 0 and 5 <= second <= 15:
         return True
     return False
 
 
-print("🚀 BOT MASTER - FIX Cooldown + Griglia 1.5%")
+print("🚀 BOT MASTER - Scan ogni 12s + Pausa migliorata")
 
 while True:
     try:
@@ -87,31 +87,37 @@ while True:
         tp_orders = [o for o in active_orders if o["side"] == "Sell" and o["orderType"] == "Limit"]
         sl_orders = [o for o in active_orders if o.get("triggerPrice")]
 
-        # ==================== CONTROLLO CANDela 4H ====================
-        if should_check_candle():
+        # ==================== SCAN OGNI 12 SECONDI ====================
+        if now - last_vol_check > 12:
             vol_data = get_volatility_data(SYMBOL)
-            
-            if vol_data and vol_data['ts'] != last_candle_ts:
-                print(f"📌 Candela 4H chiusa (+5s) → {datetime.now().strftime('%H:%M:%S')}")
+            last_vol_check = now
 
-                new_mode = "CONSERVATIVE" if vol_data['bb_width'] > 40 else "AGGRESSIVE"
-                if new_mode != current_mode:
-                    print(f"🔄 CAMBIO MODALITÀ → {new_mode} (BB Width: {vol_data['bb_width']}%)")
-                    current_mode = new_mode
+            if vol_data:
+                # Modalità e SL solo alla vera chiusura 4H
+                if is_4h_candle_close() and vol_data['ts'] != last_candle_ts:
+                    print(f"📌 Candela 4H chiusa (+5s) → {datetime.now().strftime('%H:%M:%S')}")
 
-                if price:
+                    new_mode = "CONSERVATIVE" if vol_data['bb_width'] > 40 else "AGGRESSIVE"
+                    if new_mode != current_mode:
+                        print(f"🔄 CAMBIO MODALITÀ → {new_mode} (BB Width: {vol_data['bb_width']}%)")
+                        current_mode = new_mode
+
+                    last_candle_ts = vol_data['ts']
+
+                # Filtro Pausa (controllato ogni 12 secondi)
+                if price and vol_data['lower_band']:
                     distance = ((price - vol_data['lower_band']) / vol_data['lower_band']) * 100
                     if distance <= 3.0:
+                        if not pause_until_next_candle:
+                            print(f"⛔ PAUSA ATTIVATA - Prezzo troppo vicino Lower Band ({distance:.1f}%)")
                         pause_until_next_candle = True
-                        print(f"⛔ PAUSA ATTIVATA ({distance:.1f}%)")
                     else:
+                        if pause_until_next_candle:
+                            print(f"✅ Pausa terminata - Distanza OK ({distance:.1f}%)")
                         pause_until_next_candle = False
-                
-                last_candle_ts = vol_data['ts']
 
         # ==================== POSIZIONE APERTA ====================
         if size > 0:
-            # SL Sentinella + TP Dinamico (codice invariato)
             if 'vol_data' in locals() and vol_data and vol_data['candle_low'] < vol_data['lower_band']:
                 if price and price <= vol_data['candle_low'] * 0.997:
                     print(f"🚨 FLASH CRASH → Chiusura immediata")
@@ -133,16 +139,16 @@ while True:
                 session.place_order(category="linear", symbol=SYMBOL, side="Sell", orderType="Limit", qty=str(size), price=str(target_tp), reduceOnly=True)
 
         # ==================== NUOVA ENTRATA ====================
-        elif size == 0 and (now - last_trade_time > COOLDOWN) and (now - last_entry_time > COOLDOWN):
+        elif size == 0 and (now - last_trade_time > COOLDOWN):
             if pause_until_next_candle:
-                print("⏳ In pausa - Prezzo vicino Lower Band")
+                print("⏳ BOT IN PAUSA - Prezzo vicino Lower Band")
             else:
                 print(f"🧹 Nuova entrata in modalità {current_mode}")
                 session.cancel_all_orders(category="linear", symbol=SYMBOL)
-                time.sleep(1.5)
+                time.sleep(1)
 
                 spacing = CONSERVATIVE_SPACING if current_mode == "CONSERVATIVE" else AGGRESSIVE_SPACING
-                max_levels = 10   # ← Ridotto per non mettere troppi ordini
+                max_levels = 13
 
                 session.place_order(category="linear", symbol=SYMBOL, side="Buy", orderType="Market", qty=str(GRID_SIZES[0]))
                 time.sleep(2.5)
@@ -159,7 +165,6 @@ while True:
                                           orderType="Limit", qty=str(qty), price=str(entry_price))
                     
                     last_trade_time = now
-                    last_entry_time = now   # ← Doppio controllo cooldown
 
         time.sleep(5)
 
