@@ -128,7 +128,7 @@ while True:
                 # Gestione pausa
                 if price and vol_data.get('lower_band'):
                     distance = ((price - vol_data['lower_band']) / vol_data['lower_band']) * 100
-                    pause_until_next_candle = (distance <= 3.0)
+                    pause_until_next_candle = (distance <= 2.5)
                     
                     if pause_until_next_candle:
                         print(f" PAUSA ATTIVATA | Distanza Lower Band: {distance:.2f}%")
