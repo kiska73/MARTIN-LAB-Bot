@@ -35,7 +35,7 @@ session = HTTP(testnet=False,
                api_secret=os.environ.get("BYBIT_API_SECRET"))
 
 # ==============================================================================
-# FUNZIONI
+# FUNZIONI UTILITARIE
 # ==============================================================================
 def round_price(price):
     return round(price, PRICE_DECIMALS)
@@ -94,11 +94,11 @@ def get_volatility_data(symbol):
         sma = df['close'].rolling(window=40).mean()
         std = df['close'].rolling(window=40).std()
         
-        # Calcolo bande completo (stile TradingView)
+        # Calcolo bande completo (allineato a TradingView)
         upper_band = sma + (std * 2)
         lower_band = sma - (std * 2)
         
-        # Formula BB Width reale (distanza totale normalizzata sulla SMA)
+        # Formula BB Width reale basata sulla distanza totale
         bb_width_percent = ((upper_band.iloc[-1] - lower_band.iloc[-1]) / sma.iloc[-1]) * 100
         
         return {
@@ -129,9 +129,9 @@ def should_check_candle():
     return (now_utc.hour % 4 == 0 and now_utc.minute == 0 and 5 <= now_utc.second <= 25)
 
 # ==============================================================================
-# AVVIO BOT
+# AVVIO BOT E CICLO PRINCIPALE
 # ==============================================================================
-print(" BOT MASTER - Griglia + SL Dinamico 4H (v2.6 - Fixed)")
+print(" BOT MASTER - Griglia + SL Dinamico 4H (v2.7 - Stable)")
 print(f"Symbol: {SYMBOL} | BASE_QTY: {BASE_QTY} | PERC_PAUSE: {PERC_PAUSE}%\n")
 
 while True:
@@ -145,7 +145,7 @@ while True:
 
         active_orders = session.get_open_orders(category="linear", symbol=SYMBOL)["result"]["list"]
 
-        # ==================== CONTROLLO CANDELA 4H / CONTROLLO ALL'AVVIO ====================
+        # ==================== CONTROLLO CANDELA 4H / STARTUP TIMING ====================
         if should_check_candle() or last_candle_ts == 0:
             vol_data = get_volatility_data(SYMBOL)
             
@@ -179,7 +179,7 @@ while True:
                     if last_low < lower_band:
                         sl_price = round_price(last_low * 0.999)  # Buffer di sicurezza dello 0.1% sotto il low
                         
-                        # Impedisce al bot di peggiorare lo SL spostandolo verso il basso (per i Long)
+                        # Impedisce al bot di peggiorare lo SL (non sposta lo SL verso il basso)
                         if last_sl_price == 0 or sl_price > last_sl_price:
                             try:
                                 session.set_trading_stop(
@@ -235,11 +235,14 @@ while True:
 
         # ==================== GESTIONE NUOVA ENTRATA + GRIGLIA ====================
         elif size == 0 and (now - last_trade_time > COOLDOWN):
+            # Variabile sicura per gestire un eventuale temporaneo None dall'API dei prezzi
+            safe_price = price if price is not None else 0.0
+            
             if pause_until_next_candle:
-                print(f" IN PAUSA REGIME | Prezzo attuale: {price:.4f if price else 0.0}")
+                print(f" IN PAUSA REGIME | Prezzo attuale: {safe_price:.4f}")
                 cancel_all_orders()
             else:
-                print(f" AVVIO GRIGLIA @ {price:.4f if price else 0.0} | Regime Attivo: {current_mode}")
+                print(f" AVVIO GRIGLIA @ {safe_price:.4f} | Regime Attivo: {current_mode}")
                 cancel_all_orders()
                 time.sleep(1.5)
 
