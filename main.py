@@ -146,7 +146,7 @@ def should_check_candle():
 # ==============================================================================
 # AVVIO BOT E CICLO PRINCIPALE
 # ==============================================================================
-print(" BOT MASTER - Griglia + SL Dinamico 4H (v3.5 - Solo LONG Blindato)")
+print(" BOT MASTER - Griglia + SL Dinamico 4H (v3.6 - Solo LONG Blindato)")
 print(f"Symbol: {SYMBOL} | BASE_QTY: {BASE_QTY} | PERC_PAUSE: {PERC_PAUSE}%\n")
 
 while True:
@@ -196,16 +196,24 @@ while True:
                     print(f" 🔥 CAMBIO MODALITÀ OPERATIVA → da {current_mode} a {new_mode} 🔥")
                     current_mode = new_mode
 
-                # Controllo pausa vicino alla Banda Inferiore
+                # === CONTROLLO PAUSA ESCLUSIVO E BLINDATO SULLA BANDA BASSA ===
                 if price and vol_data.get('lower_band'):
-                    distance = ((price - vol_data['lower_band']) / vol_data['lower_band']) * 100
-                    previous_pause = pause_until_next_candle
-                    pause_until_next_candle = (distance <= PERC_PAUSE)
+                    lower_band = vol_data['lower_band']
                     
-                    print(f"{'   [PAUSA ATTIVA]' if pause_until_next_candle else '   [Pausa disattivata]'} | Distanza da Lower Band: {distance:.2f}%")
+                    # Definiamo la soglia di prezzo matematica (Banda Bassa + tolleranza percentuale)
+                    soglia_sicurezza = lower_band * (1 + (PERC_PAUSE / 100))
+                    
+                    previous_pause = pause_until_next_candle
+                    
+                    # La pausa si attiva SOLO se il prezzo è minore o uguale alla soglia della banda bassa.
+                    # Se il prezzo vola verso l'alto (es. 19.08), questa condizione sarà FALSE.
+                    pause_until_next_candle = (price <= soglia_sicurezza)
+                    
+                    print(f"   [VERIFICA PAUSA 4H] Prezzo: {price} | Banda Bassa: {lower_band} | Soglia Attivazione Pausa: {soglia_sicurezza:.4f}")
+                    print(f"   | Stato: {'⚠️ IN PAUSA REGIME' if pause_until_next_candle else '✅ REGIME OPERATIVO REGOLARE'}")
 
                     if pause_until_next_candle and not previous_pause:
-                        print("   PAUSA ATTIVATA → CHIUSURA FORZATA DELLE POSIZIONI PER SICUREZZA")
+                        print("   PAUSA ATTIVATA → CHIUSURA FORZATA DELLE POSIZIONI PER SICUREZZA (Rottura/Vicinanza Banda Bassa)")
                         cancel_all_orders()
                         close_position()
                         last_trade_time = now + 40
@@ -247,7 +255,6 @@ while True:
                 last_tp_update_time = 0
                 last_sl_price = 0.0
             
-            # COME DEVE ESSERE (Dinamico e automatico)
             elif (abs(target_tp - last_tp_price) > (10 ** -PRICE_DECIMALS)) and (now - last_tp_update_time > 12):
                 tp_orders = [o for o in active_orders if o.get("side") == "Sell" and o.get("orderType") == "Limit" and o.get("reduceOnly") is True]
 
@@ -280,14 +287,14 @@ while True:
                         last_tp_price = 0.0
                         last_tp_update_time = 0
                         last_sl_price = 0.0
-                        time.sleep(10) # Pausa di sicurezza antipanico per le API
+                        time.sleep(10)
 
         # ==================== GESTIONE NUOVA ENTRATA + GRIGLIA ====================
         elif size == 0 and (now - last_trade_time > COOLDOWN):
             safe_price = price if price is not None else 0.0
             
             if pause_until_next_candle:
-                print(f" IN PAUSA REGIME | Prezzo attuale: {safe_price:.4f}")
+                print(f" IN PAUSA REGIME | Prezzo attuale: {safe_price:.4f} (In attesa della prossima candela 4H lontano dalla banda bassa)")
                 cancel_all_orders()
             else:
                 print(f" AVVIO GRIGLIA @ {safe_price:.4f} | Regime Attivo: {current_mode}")
@@ -302,13 +309,12 @@ while True:
                     time.sleep(10)
                     continue
 
-                time.sleep(3.0) # Attesa consolidamento ordine su Bybit
+                time.sleep(3.0) 
 
                 new_pos = session.get_positions(category="linear", symbol=SYMBOL)["result"]["list"][0]
                 current_size = float(new_pos["size"])
                 current_side = new_pos.get("side", "")
                 
-                # Genera la griglia SOLO se l'ordine market è andato a buon fine ed è un Long
                 if current_side == "Buy" and current_size > 0:
                     avg = float(new_pos["avgPrice"])
                     print(f" Primo ordine eseguito a mercato @ {avg:.4f}. Generazione livelli griglia...")
