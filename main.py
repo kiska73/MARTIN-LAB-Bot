@@ -13,11 +13,13 @@ BASE_QTY = 60  # <<--- LA QUANTITÀ LA DECIDI TU QUI (Pezzi del 1° livello)
 GRID_MULTIPLIERS = [1, 1, 1, 1.5, 2, 2, 3, 4.5] 
 
 # Calibri degli spaziatori per arrivare precisi al 12% di calo cumulativo
-# L1: 0% | L2: -1.0% | L3: -2.0% | L4: -3.2% | L5: -4.7% | L6: -6.7% | L7: -9.2% | L8: -12.0%
 GRID_SPACING = [0.0, 1.0, 1.0, 1.2, 1.5, 2.0, 2.5, 2.8]
 
 # Target profit fisso della griglia (es. 0.90% sul prezzo medio ponderato)
 TAKE_PROFIT_PERCENT = 0.90 
+
+# Distanza percentuale dello Stop Loss Fisso dal prezzo di partenza dell'L1
+STOP_LOSS_PERCENT = 15.5
 
 COOLDOWN = 30  # Secondi di pausa dopo la chiusura di una griglia
 
@@ -33,7 +35,7 @@ QTY_DECIMALS = 0
 last_trade_time = 0
 last_tp_price = 0.0
 last_tp_update_time = 0
-prezzo_inizio_griglia = 0.0  # Punto di riferimento fisso per lo SL fisso
+prezzo_inizio_griglia = 0.0 
 
 # Connessione alle API di Bybit
 session = HTTP(
@@ -55,9 +57,10 @@ def round_qty(qty):
 
 def cancel_all_orders():
     try:
+        # Cancella sia gli ordini LIMIT (Griglia e TP) sia i condizionali (SL)
         session.cancel_all_orders(category="linear", symbol=SYMBOL)
         time.sleep(0.5)
-        print(" [SISTEMA] Tutti gli ordini limit cancellati")
+        print(" [SISTEMA] Tutti gli ordini (Limit e SL condizionali) cancellati")
         return True
     except Exception as e:
         print(f" Errore cancel all: {e}")
@@ -94,9 +97,12 @@ def get_current_price():
 # ==============================================================================
 # AVVIO BOT E CICLO CONTINUO
 # ==============================================================================
-print(" 🤖 BOT GRID LEVA 1 (v8.1 - Quantità Fissa in Token)")
+print(" 🤖 BOT GRID LEVA 1 (v8.2 - SL Visibile su Bybit)")
 print(f" Strumento: {SYMBOL} | Quantità Base (L1): {BASE_QTY} UAI | Livelli: 8")
-print(f" Copertura griglia: -12.0% | Stop Loss Fisso dalla partenza: -15.5%\n")
+print(f" Copertura griglia: -12.0% | Stop Loss Fisso (Nativo): -{STOP_LOSS_PERCENT}%\n")
+
+# Calcolo preventivo della dimensione massima teorica della griglia
+MAX_TOTAL_QTY = round_qty(sum([BASE_QTY * m for m in GRID_MULTIPLIERS]))
 
 while True:
     try:
@@ -119,18 +125,6 @@ while True:
             last_tp_price = 0.0
             prezzo_inizio_griglia = 0.0
 
-        # ==================== CONTROLLO REALE STOP LOSS FISSO (-15.5%) ====================
-        if size > 0 and prezzo_inizio_griglia > 0:
-            target_sl = round_price(prezzo_inizio_griglia * (1 - 15.5 / 100))
-
-            if price and price <= target_sl:
-                print(f"\n 🚨🚨 [STOP LOSS MATEMATICO] Prezzo ({price}) <= SL Fisso ({target_sl})!")
-                cancel_all_orders()
-                close_position()
-                prezzo_inizio_griglia = 0.0
-                last_trade_time = now + 300  # 5 minuti di penalità prima di ripartire
-                continue
-
         # ==================== GESTIONE TARGET PROFIT (TP) ====================
         if size > 0:
             target_tp = round_price(avg_price * (1 + TAKE_PROFIT_PERCENT / 100))
@@ -144,8 +138,9 @@ while True:
                 last_tp_price = 0.0
                 prezzo_inizio_griglia = 0.0
             
-            # Aggiornamento ordine limite di TP
+            # Aggiornamento ordine limite di TP (Non tocca lo Stop Loss)
             elif (abs(target_tp - last_tp_price) > (10 ** -PRICE_DECIMALS)) and (now - last_tp_update_time > 10):
+                # Filtra solo l'ordine di TP (Limit, Sell, ReduceOnly) senza toccare i Condizionali (Market/SL)
                 tp_orders = [o for o in active_orders if o.get("side") == "Sell" and o.get("orderType") == "Limit" and o.get("reduceOnly") is True]
 
                 update_needed = False
@@ -172,7 +167,7 @@ while True:
                     except:
                         pass
 
-        # ==================== GENERAZIONE STRUTTURA GRIGLIA (IN TOKEN) ====================
+        # ==================== GENERAZIONE STRUTTURA GRIGLIA ====================
         elif size == 0 and (now - last_trade_time > COOLDOWN):
             safe_price = price if price is not None else 0.0
             print(f"\n 🛒 Avvio ciclo griglia 8 livelli @ {safe_price:.4f}")
@@ -194,17 +189,36 @@ while True:
             new_pos = session.get_positions(category="linear", symbol=SYMBOL)["result"]["list"][0]
             avg = float(new_pos["avgPrice"])
             
-            # Fissiamo il prezzo di partenza reale per i calcoli successivi
+            # Fissiamo il prezzo di partenza reale
             prezzo_inizio_griglia = avg 
-            print(f" 📌 Prezzo base impostato a: {prezzo_inizio_griglia:.5f} | SL calcolato a: {prezzo_inizio_griglia * 0.845:.5f}")
+            
+            # Calcolo del prezzo di Stop Loss statico
+            prezzo_sl = round_price(prezzo_inizio_griglia * (1 - STOP_LOSS_PERCENT / 100))
+            print(f" 📌 Prezzo base impostato a: {prezzo_inizio_griglia:.5f}")
+            
+            # ------------------------------------------------------------------
+            # PIAZZAMENTO DELLO STOP LOSS REALE (CONDIZIONALE) SU BYBIT
+            # ------------------------------------------------------------------
+            try:
+                session.place_order(
+                    category="linear",
+                    symbol=SYMBOL,
+                    side="Sell",
+                    orderType="Market",       # Viene eseguito a mercato al tocco del trigger
+                    qty=str(MAX_TOTAL_QTY),   # Copre l'esposizione MASSIMA teorica della griglia
+                    triggerPrice=str(prezzo_sl),
+                    triggerBy="LastPrice",
+                    reduceOnly=True           # Fondamentale per evitare l'apertura di uno Short
+                )
+                print(f" 🛑 [STOP LOSS NATIVO] Inserito su Bybit a {prezzo_sl:.5f} per {MAX_TOTAL_QTY} UAI (Visibile sul grafico)")
+            except Exception as sl_err:
+                print(f" ⚠️ Errore critico nell'inserimento dello Stop Loss nativo: {sl_err}")
 
-            # Generazione automatica dei restanti 7 livelli LIMIT basati sui moltiplicatori
+            # Generazione automatica dei restanti 7 livelli LIMIT
             accumulated_drop = 0
             for i in range(1, len(GRID_MULTIPLIERS)):
                 accumulated_drop += GRID_SPACING[i]
                 entry_price = round_price(prezzo_inizio_griglia * (1 - accumulated_drop / 100))
-                
-                # Calcolo puro dei token: BASE_QTY moltiplicata per il coefficiente del livello
                 qty_livello = round_qty(BASE_QTY * GRID_MULTIPLIERS[i])
                 
                 try:
@@ -217,7 +231,7 @@ while True:
                     print(f" ❌ Errore inserimento livello {i+1}: {grid_err}")
             
             last_trade_time = now
-            print(" ✅ Griglia configurata e attiva con quantità fisse. Monitoraggio...")
+            print(" ✅ Griglia configurata e attiva. Monitoraggio ordinario...")
 
         time.sleep(2)
 
