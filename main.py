@@ -97,11 +97,11 @@ def get_current_price():
 # ==============================================================================
 # AVVIO BOT E CICLO CONTINUO
 # ==============================================================================
-print(" 🤖 BOT GRID LEVA 1 (v8.2 - SL Visibile su Bybit)")
+print(" 🤖 BOT GRID LEVA 1 (v8.3 - Fix Trigger Direction & Qty)")
 print(f" Strumento: {SYMBOL} | Quantità Base (L1): {BASE_QTY} UAI | Livelli: 8")
 print(f" Copertura griglia: -12.0% | Stop Loss Fisso (Nativo): -{STOP_LOSS_PERCENT}%\n")
 
-# Calcolo preventivo della dimensione massima teorica della griglia
+# Calcolo preventivo esatto della dimensione massima teorica della griglia
 MAX_TOTAL_QTY = round_qty(sum([BASE_QTY * m for m in GRID_MULTIPLIERS]))
 
 while True:
@@ -140,7 +140,7 @@ while True:
             
             # Aggiornamento ordine limite di TP (Non tocca lo Stop Loss)
             elif (abs(target_tp - last_tp_price) > (10 ** -PRICE_DECIMALS)) and (now - last_tp_update_time > 10):
-                # Filtra solo l'ordine di TP (Limit, Sell, ReduceOnly) senza toccare i Condizionali (Market/SL)
+                # Filtra solo l'ordine di TP (Limit, Sell, ReduceOnly) senza toccare i Condizionali
                 tp_orders = [o for o in active_orders if o.get("side") == "Sell" and o.get("orderType") == "Limit" and o.get("reduceOnly") is True]
 
                 update_needed = False
@@ -197,18 +197,19 @@ while True:
             print(f" 📌 Prezzo base impostato a: {prezzo_inizio_griglia:.5f}")
             
             # ------------------------------------------------------------------
-            # PIAZZAMENTO DELLO STOP LOSS REALE (CONDIZIONALE) SU BYBIT
+            # PIAZZAMENTO DELLO STOP LOSS REALE (CONDIZIONALE) SU BYBIT (FIXED)
             # ------------------------------------------------------------------
             try:
                 session.place_order(
                     category="linear",
                     symbol=SYMBOL,
                     side="Sell",
-                    orderType="Market",       # Viene eseguito a mercato al tocco del trigger
-                    qty=str(MAX_TOTAL_QTY),   # Copre l'esposizione MASSIMA teorica della griglia
+                    orderType="Market",       # Eseguito a mercato al tocco del trigger
+                    qty=str(MAX_TOTAL_QTY),   # Esattamente la somma totale (es. 972)
                     triggerPrice=str(prezzo_sl),
                     triggerBy="LastPrice",
-                    reduceOnly=True           # Fondamentale per evitare l'apertura di uno Short
+                    triggerDirection=2,        # FIXED: 2 indica che il prezzo scende verso lo SL
+                    reduceOnly=True           # Chiude la griglia senza aprire short
                 )
                 print(f" 🛑 [STOP LOSS NATIVO] Inserito su Bybit a {prezzo_sl:.5f} per {MAX_TOTAL_QTY} UAI (Visibile sul grafico)")
             except Exception as sl_err:
