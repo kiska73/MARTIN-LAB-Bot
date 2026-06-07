@@ -10,16 +10,16 @@ SYMBOL = "UAIUSDT"
 BASE_QTY = 70  # <<--- LA QUANTITÀ LA DECIDI TU QUI (Pezzi del 1° livello)
 
 # 8 Livelli: il bot moltiplicherà la tua BASE_QTY per questi coefficienti
-GRID_MULTIPLIERS = [1, 1, 1, 1.5, 2, 2, 3, 4.5] 
+GRID_MULTIPLIERS = [1, 1, 1, 1.5, 2, 2, 3, 4.] 
 
 # Calibri degli spaziatori per arrivare precisi al 12% di calo cumulativo
-GRID_SPACING = [0.0, 1.0, 1.0, 1.2, 1.5, 2.0, 2.5, 2.8]
+GRID_SPACING = [0.0, 1.0, 1.0, 1.2, 1.5, 2.0, 2.5, 3]
 
 # Target profit fisso della griglia (es. 0.90% sul prezzo medio ponderato)
 TAKE_PROFIT_PERCENT = 1.2
 
 # Distanza percentuale dello Stop Loss Fisso dal prezzo di partenza dell'L1
-STOP_LOSS_PERCENT = 15.5
+STOP_LOSS_PERCENT = 15
 
 COOLDOWN = 30  # Secondi di pausa dopo la chiusura di una griglia
 
