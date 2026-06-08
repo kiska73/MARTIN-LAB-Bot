@@ -10,7 +10,7 @@ SYMBOL = "UAIUSDT"
 BASE_QTY = 80  # <<--- LA QUANTITÀ LA DECIDI TU QUI (Pezzi del 1° livello)
 
 # 8 Livelli: il bot moltiplicherà la tua BASE_QTY per questi coefficienti
-GRID_MULTIPLIERS = [1, 1, 1, 1.5, 2, 2, 3, 4.] 
+GRID_MULTIPLIERS = [1,1,1.2,1.5,1.8,2.2,2.7,3.3]
 
 # Calibri degli spaziatori per arrivare precisi al 12% di calo cumulativo
 GRID_SPACING = [0.0, 0.8, 1.0, 1.2, 1.5, 2.0, 2.5, 3]
