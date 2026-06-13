@@ -7,7 +7,7 @@ from pybit.unified_trading import HTTP
 # CONFIGURAZIONE OPERATIVA - QUANTITÀ FISSE (UAI)
 # ==============================================================================
 SYMBOL = "UAIUSDT"
-BASE_QTY = 70  # <<--- LA QUANTITÀ LA DECIDI TU QUI (Pezzi del 1° livello)
+BASE_QTY = 100  # <<--- LA QUANTITÀ LA DECIDI TU QUI (Pezzi del 1° livello)
 
 # 8 Livelli: il bot moltiplicherà la tua BASE_QTY per questi coefficienti
 GRID_MULTIPLIERS = [1,1,1.2,1.5,1.8,2.2,2.7,3.3]
@@ -19,7 +19,7 @@ GRID_SPACING = [0.0, 0.8, 1.0, 1.2, 1.5, 2.0, 2.5, 3]
 TAKE_PROFIT_PERCENT = 1
 
 # Distanza percentuale dello Stop Loss Fisso dal prezzo di partenza dell'L1
-STOP_LOSS_PERCENT = 15
+STOP_LOSS_PERCENT = 21
 
 COOLDOWN = 30  # Secondi di pausa dopo la chiusura di una griglia
 
