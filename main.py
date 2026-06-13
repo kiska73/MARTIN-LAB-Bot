@@ -13,7 +13,7 @@ BASE_QTY = 100  # <<--- LA QUANTITÀ LA DECIDI TU QUI (Pezzi del 1° livello)
 GRID_MULTIPLIERS = [1,1,1.2,1.5,1.8,2.2,2.7,3.3]
 
 # Calibri degli spaziatori per arrivare precisi al 12% di calo cumulativo
-GRID_SPACING = [0.0, 0.8, 1.0, 1.2, 1.5, 2.0, 2.5, 3]
+GRID_SPACING = [0.0, 0.8, 1.0, 1.2, 1.5, 2.5, 4.0, 5.0]
 
 # Target profit fisso della griglia (es. 0.90% sul prezzo medio ponderato)
 TAKE_PROFIT_PERCENT = 1
